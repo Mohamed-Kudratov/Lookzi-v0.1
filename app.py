@@ -1,0 +1,524 @@
+"""
+Lookzi Virtual Try-On
+=====================
+Start:  python app.py
+UI:     http://127.0.0.1:7860
+API:    http://127.0.0.1:7860/api/tryon  (POST)
+Docs:   http://127.0.0.1:7860/docs
+"""
+
+from __future__ import annotations
+
+import os
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+import io
+import gc
+import sys
+import uuid
+import base64
+import random
+import logging
+import argparse
+import traceback
+import time
+from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("lookzi")
+
+for pkg in ["torch", "gradio", "fastapi", "PIL", "fashn_vton"]:
+    try:
+        __import__(pkg if pkg != "PIL" else "PIL.Image")
+    except ImportError:
+        sys.exit(f"[ERROR] '{pkg}' not found. Run:  pip install -e .")
+
+import torch
+import gradio as gr
+from PIL import Image
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi.responses import StreamingResponse, JSONResponse
+import uvicorn
+
+ROOT    = Path(__file__).parent
+WEIGHTS = ROOT / "weights"
+OUTPUTS = ROOT / "outputs"
+OUTPUTS.mkdir(exist_ok=True)
+
+# ── Category map: UI label → pipeline value ───────────────────────────────
+CATEGORY_MAP = {
+    "Upper":   "tops",
+    "Lower":   "bottoms",
+    "Overall": "one-pieces",
+}
+
+# ── Default inference settings ────────────────────────────────────────────
+DEFAULT_STEPS     = 30
+DEFAULT_GUIDANCE  = 1.5
+DEFAULT_SEG_FREE  = True
+
+# ── Pipeline singleton ────────────────────────────────────────────────────
+_pipeline = None
+
+def get_pipeline():
+    global _pipeline
+    if _pipeline is not None:
+        return _pipeline
+    if not (WEIGHTS / "model.safetensors").exists():
+        raise RuntimeError("Model weights not found. Run: python scripts/download_weights.py --weights-dir ./weights")
+    from fashn_vton import TryOnPipeline
+    logger.info("Loading Lookzi model...")
+    _pipeline = TryOnPipeline(weights_dir=str(WEIGHTS))
+    logger.info("Model ready on: %s", _pipeline.device)
+    return _pipeline
+
+
+# ── Core inference ────────────────────────────────────────────────────────
+def run_tryon(
+    person_image:       Image.Image,
+    garment_image:      Image.Image,
+    category:           str,
+    garment_photo_type: str   = "model",
+    num_timesteps:      int   = DEFAULT_STEPS,
+    guidance_scale:     float = DEFAULT_GUIDANCE,
+    seed:               int   = -1,
+    segmentation_free:  bool  = DEFAULT_SEG_FREE,
+) -> tuple[Image.Image | None, str]:
+
+    if person_image is None:
+        return None, "Please upload a person photo."
+    if garment_image is None:
+        return None, "Please upload a garment image."
+
+    api_category = CATEGORY_MAP.get(category, "tops")
+    actual_seed  = random.randint(0, 2**31) if seed < 0 else int(seed)
+
+    try:
+        pipe = get_pipeline()
+        t0   = time.time()
+        output = pipe(
+            person_image=person_image.convert("RGB"),
+            garment_image=garment_image.convert("RGB"),
+            category=api_category,
+            garment_photo_type=garment_photo_type,
+            num_timesteps=int(num_timesteps),
+            guidance_scale=float(guidance_scale),
+            segmentation_free=bool(segmentation_free),
+            seed=actual_seed,
+        )
+        elapsed = time.time() - t0
+
+        result = output.images[0]
+        fname  = f"{uuid.uuid4().hex[:8]}_{api_category}.png"
+        result.save(OUTPUTS / fname)
+        logger.info("Done %.1fs -> %s", elapsed, fname)
+
+        vram = ""
+        if torch.cuda.is_available():
+            used  = torch.cuda.memory_reserved(0) / 1e9
+            total = torch.cuda.get_device_properties(0).total_memory / 1e9
+            vram  = f" | VRAM {used:.1f}/{total:.0f} GB"
+
+        return result, f"Done in {elapsed:.1f}s{vram}"
+
+    except torch.cuda.OutOfMemoryError:
+        gc.collect()
+        torch.cuda.empty_cache()
+        return None, "Out of memory. Try reducing Steps or restart."
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        return None, f"Error: {e}"
+
+
+# ── FastAPI REST ──────────────────────────────────────────────────────────
+api = FastAPI(
+    title="Lookzi Virtual Try-On API",
+    version="1.0.0",
+    description="Lookzi — AI-powered Virtual Try-On. Local, fast, private.",
+)
+
+
+@api.get("/api/health")
+def health():
+    info: dict = {"status": "ok", "brand": "Lookzi", "model_loaded": _pipeline is not None}
+    if torch.cuda.is_available():
+        prop  = torch.cuda.get_device_properties(0)
+        total = prop.total_memory / 1e9
+        used  = torch.cuda.memory_reserved(0) / 1e9
+        info["gpu"] = {"name": prop.name, "vram_total_gb": round(total, 1),
+                       "vram_free_gb": round(total - used, 2)}
+    return info
+
+
+@api.post("/api/tryon")
+async def api_tryon(
+    person_image:       UploadFile = File(..., description="Person photo"),
+    garment_image:      UploadFile = File(..., description="Garment image"),
+    category:           str  = Form("Upper",  description="Upper | Lower | Overall"),
+    garment_photo_type: str  = Form("model",  description="model | flat-lay"),
+    return_base64:      bool = Form(False),
+):
+    """
+    Lookzi Virtual Try-On endpoint.
+    - **category**: `Upper` / `Lower` / `Overall`
+    - **garment_photo_type**: `model` or `flat-lay`
+    """
+    try:
+        person_pil  = Image.open(io.BytesIO(await person_image.read())).convert("RGB")
+        garment_pil = Image.open(io.BytesIO(await garment_image.read())).convert("RGB")
+    except Exception as e:
+        raise HTTPException(400, f"Invalid image: {e}")
+
+    if category not in CATEGORY_MAP:
+        raise HTTPException(422, f"category must be one of: {list(CATEGORY_MAP.keys())}")
+
+    result, msg = run_tryon(person_pil, garment_pil, category, garment_photo_type)
+    if result is None:
+        raise HTTPException(500, msg)
+
+    buf = io.BytesIO()
+    result.save(buf, format="PNG")
+    buf.seek(0)
+
+    if return_base64:
+        return JSONResponse({"status": "ok", "message": msg,
+                             "image_base64": base64.b64encode(buf.getvalue()).decode()})
+    return StreamingResponse(buf, media_type="image/png", headers={"X-Lookzi-Info": msg})
+
+
+# ── UI CSS ────────────────────────────────────────────────────────────────
+CSS = """
+/* ── Global ── */
+* { box-sizing: border-box; }
+body, .gradio-container {
+    background: #0a0a0a !important;
+    font-family: 'Inter', 'Segoe UI', sans-serif !important;
+    color: #f0f0f0 !important;
+}
+
+/* ── Hide ALL Gradio branding / API / Settings ── */
+footer,
+.footer,
+#footer,
+.built-with,
+.show-api,
+.api-docs,
+.api-recorder,
+button[title="Settings"],
+button[aria-label="Settings"],
+.settings-button,
+[data-testid="settings-button"],
+.gradio-footer,
+.svelte-byatnx,
+a[href*="gradio.app"],
+div.meta-text,
+.meta-text-public,
+.share-button,
+#component-0 > .footer { display: none !important; }
+
+.gradio-container { max-width: 1300px !important; margin: 0 auto !important; }
+
+/* ── Header ── */
+.lookzi-header {
+    text-align: center;
+    padding: 36px 0 20px;
+}
+.lookzi-header .logo {
+    font-size: 3rem;
+    font-weight: 800;
+    letter-spacing: -2px;
+    background: linear-gradient(135deg, #ffffff 0%, #a0a0ff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.lookzi-header .tagline {
+    color: #666;
+    font-size: 0.9rem;
+    margin-top: 4px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+}
+
+/* ── Upload panels ── */
+.upload-panel .svelte-1ipelgc,
+.upload-panel .wrap {
+    border: 2px dashed #2a2a2a !important;
+    border-radius: 16px !important;
+    background: #111 !important;
+    transition: border-color 0.2s;
+}
+.upload-panel .svelte-1ipelgc:hover { border-color: #5555ff !important; }
+.result-panel .wrap {
+    border: 2px solid #1e1e1e !important;
+    border-radius: 16px !important;
+    background: #0d0d0d !important;
+}
+
+/* ── Category buttons ── */
+.category-row .gradio-radio { gap: 10px !important; }
+.category-row label span {
+    border-radius: 100px !important;
+    padding: 8px 24px !important;
+    font-weight: 600 !important;
+    font-size: 0.85rem !important;
+    letter-spacing: 0.5px !important;
+    border: 2px solid #2a2a2a !important;
+    background: #111 !important;
+    color: #aaa !important;
+    transition: all 0.15s !important;
+    cursor: pointer;
+}
+.category-row label.selected span,
+.category-row input:checked + span {
+    border-color: #5555ff !important;
+    background: #1a1a4a !important;
+    color: #fff !important;
+}
+
+/* ── Try On button ── */
+.tryon-btn button {
+    background: linear-gradient(135deg, #4444ee, #7755ff) !important;
+    border: none !important;
+    border-radius: 14px !important;
+    font-size: 1.05rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 1px !important;
+    color: #fff !important;
+    height: 56px !important;
+    transition: opacity 0.2s, transform 0.1s !important;
+    text-transform: uppercase !important;
+}
+.tryon-btn button:hover { opacity: 0.9 !important; transform: translateY(-1px) !important; }
+.tryon-btn button:active { transform: translateY(0) !important; }
+
+/* ── Clear button ── */
+.clear-btn button {
+    background: #1a1a1a !important;
+    border: 2px solid #2a2a2a !important;
+    border-radius: 14px !important;
+    color: #666 !important;
+    height: 56px !important;
+    font-weight: 600 !important;
+}
+
+/* ── Status bar ── */
+.status-box textarea {
+    background: #0d0d0d !important;
+    border: 1px solid #1e1e1e !important;
+    border-radius: 10px !important;
+    color: #4ade80 !important;
+    font-size: 0.82rem !important;
+    font-family: monospace !important;
+}
+
+/* ── Section labels ── */
+.section-label {
+    color: #555;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    padding: 16px 0 6px;
+}
+
+/* ── Examples gallery ── */
+.examples-gallery .label-wrap { color: #555 !important; font-size: 0.8rem !important; }
+.examples-gallery table td { background: #111 !important; border-radius: 8px !important; }
+"""
+
+
+# ── Gradio UI ─────────────────────────────────────────────────────────────
+def build_ui() -> gr.Blocks:
+    persons_dir  = ROOT / "examples" / "data" / "persons"
+    garments_dir = ROOT / "examples" / "data" / "garments"
+
+    person_imgs  = sorted(persons_dir.glob("*.[jJpPwW]*"))  if persons_dir.exists() else []
+    upper_imgs   = sorted(garments_dir.glob("upper_*"))     if garments_dir.exists() else []
+    lower_imgs   = sorted(garments_dir.glob("lower_*"))     if garments_dir.exists() else []
+    overall_imgs = sorted(garments_dir.glob("overall_*"))   if garments_dir.exists() else []
+
+    with gr.Blocks(title="Lookzi — Virtual Try-On", css=CSS,
+                   analytics_enabled=False) as demo:
+
+        # ── Header ────────────────────────────────────────────────────────
+        gr.HTML("""
+        <div class="lookzi-header">
+            <div class="logo">Lookzi</div>
+            <div class="tagline">AI Virtual Try-On &nbsp;·&nbsp; Try Before You Buy</div>
+        </div>
+        """)
+
+        # ── Main panels ───────────────────────────────────────────────────
+        with gr.Row(equal_height=True):
+            with gr.Column(elem_classes="upload-panel"):
+                gr.HTML('<div class="section-label">Person Photo</div>')
+                person_img = gr.Image(
+                    label="",
+                    type="pil",
+                    height=480,
+                    show_label=False,
+                )
+
+            with gr.Column(elem_classes="upload-panel"):
+                gr.HTML('<div class="section-label">Garment</div>')
+                garment_img = gr.Image(
+                    label="",
+                    type="pil",
+                    height=480,
+                    show_label=False,
+                )
+
+            with gr.Column(elem_classes="result-panel"):
+                gr.HTML('<div class="section-label">Result</div>')
+                result_img = gr.Image(
+                    label="",
+                    type="pil",
+                    height=480,
+                    show_label=False,
+                    interactive=False,
+                )
+
+        # ── Category + photo type ─────────────────────────────────────────
+        with gr.Row(elem_classes="category-row"):
+            with gr.Column(scale=3):
+                category = gr.Radio(
+                    choices=["Upper", "Lower", "Overall"],
+                    value="Upper",
+                    label="Garment Type",
+                    info="Upper = shirts & jackets  ·  Lower = pants & skirts  ·  Overall = dresses & jumpsuits",
+                )
+            with gr.Column(scale=2):
+                photo_type = gr.Radio(
+                    choices=["model", "flat-lay"],
+                    value="model",
+                    label="Garment Photo",
+                    info="model = worn by someone  ·  flat-lay = product shot",
+                )
+
+        # ── Advanced controls ─────────────────────────────────────────────
+        with gr.Row():
+            timesteps = gr.Slider(10, 50, value=DEFAULT_STEPS, step=1,
+                                  label="Steps",
+                                  info="More = slower but sharper")
+            guidance  = gr.Slider(0.5, 7.0, value=DEFAULT_GUIDANCE, step=0.1,
+                                  label="Guidance Scale")
+            seed      = gr.Number(value=-1, precision=0,
+                                  label="Seed  (-1 = random)")
+            seg_free  = gr.Checkbox(value=DEFAULT_SEG_FREE,
+                                    label="Segmentation-Free",
+                                    info="Better for loose/baggy garments")
+
+        # ── Action buttons ────────────────────────────────────────────────
+        with gr.Row():
+            run_btn   = gr.Button("Try On", variant="primary",   scale=5,
+                                  size="lg", elem_classes="tryon-btn")
+            clear_btn = gr.Button("Clear",  variant="secondary", scale=1,
+                                  size="lg", elem_classes="clear-btn")
+
+        status = gr.Textbox(
+            label="", placeholder="Ready.", interactive=False,
+            lines=1, max_lines=2, show_label=False, elem_classes="status-box",
+        )
+
+        # ── Example galleries ─────────────────────────────────────────────
+        gr.HTML('<div class="section-label" style="padding-top:28px">Models</div>')
+        if person_imgs:
+            gr.Examples(
+                examples=[[str(p)] for p in person_imgs],
+                inputs=[person_img],
+                label="",
+                examples_per_page=10,
+                elem_id="persons-gallery",
+            )
+
+        with gr.Row():
+            with gr.Column():
+                gr.HTML('<div class="section-label">Upper Garments</div>')
+                if upper_imgs:
+                    gr.Examples(
+                        examples=[[str(g)] for g in upper_imgs],
+                        inputs=[garment_img],
+                        label="",
+                        examples_per_page=10,
+                    )
+            with gr.Column():
+                gr.HTML('<div class="section-label">Lower Garments</div>')
+                if lower_imgs:
+                    gr.Examples(
+                        examples=[[str(g)] for g in lower_imgs],
+                        inputs=[garment_img],
+                        label="",
+                        examples_per_page=10,
+                    )
+            with gr.Column():
+                gr.HTML('<div class="section-label">Overall / One-Piece</div>')
+                if overall_imgs:
+                    gr.Examples(
+                        examples=[[str(g)] for g in overall_imgs],
+                        inputs=[garment_img],
+                        label="",
+                        examples_per_page=10,
+                    )
+
+        # ── Footer ────────────────────────────────────────────────────────
+        gr.HTML("""
+        <div style="text-align:center;padding:32px 0 16px;color:#333;font-size:0.78rem;
+                    letter-spacing:1px;text-transform:uppercase;">
+            Lookzi &nbsp;·&nbsp; Powered by AI &nbsp;·&nbsp; All processing on-device
+        </div>
+        """)
+
+        # ── Logic ─────────────────────────────────────────────────────────
+        def infer(person, garment, cat, ptype, steps, cfg, rng, sfree):
+            img, msg = run_tryon(person, garment, cat, ptype,
+                                 int(steps), float(cfg), int(rng), bool(sfree))
+            return img, msg
+
+        run_btn.click(
+            fn=infer,
+            inputs=[person_img, garment_img, category, photo_type,
+                    timesteps, guidance, seed, seg_free],
+            outputs=[result_img, status],
+            api_name="tryon",
+        )
+        clear_btn.click(
+            fn=lambda: (None, None, None, ""),
+            outputs=[person_img, garment_img, result_img, status],
+        )
+
+    return demo
+
+
+# ── Entry point ───────────────────────────────────────────────────────────
+def main():
+    p = argparse.ArgumentParser(description="Lookzi Virtual Try-On Server")
+    p.add_argument("--host",    default="127.0.0.1")
+    p.add_argument("--port",    default=7860, type=int)
+    p.add_argument("--share",   action="store_true")
+    p.add_argument("--preload", action="store_true")
+    args = p.parse_args()
+
+    if torch.cuda.is_available():
+        prop = torch.cuda.get_device_properties(0)
+        logger.info("GPU: %s | VRAM: %.1f GB", prop.name, prop.total_memory / 1e9)
+
+    if args.preload:
+        get_pipeline()
+
+    demo = build_ui()
+    app  = gr.mount_gradio_app(api, demo, path="/",
+                               show_api=False)
+
+    logger.info("Lookzi running at http://%s:%d", args.host, args.port)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning",
+                timeout_keep_alive=300)
+
+
+if __name__ == "__main__":
+    main()
