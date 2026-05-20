@@ -343,7 +343,7 @@ def build_ui() -> gr.Blocks:
     lower_imgs   = sorted(garments_dir.glob("lower_*"))     if garments_dir.exists() else []
     overall_imgs = sorted(garments_dir.glob("overall_*"))   if garments_dir.exists() else []
 
-    with gr.Blocks(title="Lookzi — Virtual Try-On", css=CSS,
+    with gr.Blocks(title="Lookzi — Virtual Try-On",
                    analytics_enabled=False) as demo:
 
         # ── Header ────────────────────────────────────────────────────────
@@ -492,6 +492,7 @@ def build_ui() -> gr.Blocks:
             outputs=[person_img, garment_img, result_img, status],
         )
 
+    demo.css = CSS
     return demo
 
 
@@ -512,8 +513,7 @@ def main():
         get_pipeline()
 
     demo = build_ui()
-    app  = gr.mount_gradio_app(api, demo, path="/",
-                               show_api=False)
+    app  = gr.mount_gradio_app(api, demo, path="/")
 
     logger.info("Lookzi running at http://%s:%d", args.host, args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning",
