@@ -497,7 +497,7 @@ def build_ui() -> gr.Blocks:
 
 
 # ── Tunnel (ngrok) ────────────────────────────────────────────────────────
-def _start_ngrok(port: int, authtoken: str | None = None):
+def _start_ngrok(port: int, authtoken: str | None = None, domain: str | None = None):
     """Start ngrok tunnel and print public URL."""
     try:
         from pyngrok import ngrok, conf as ngrok_conf
@@ -508,15 +508,19 @@ def _start_ngrok(port: int, authtoken: str | None = None):
     if authtoken:
         ngrok_conf.get_default().auth_token = authtoken
 
-    tunnel = ngrok.connect(port, "http")
+    options = {}
+    if domain:
+        options["domain"] = domain
+
+    tunnel = ngrok.connect(port, "http", **options)
     url    = tunnel.public_url
 
     logger.info("")
-    logger.info("=" * 54)
+    logger.info("=" * 58)
     logger.info("  LOOKZI PUBLIC URL : %s", url)
     logger.info("  API DOCS          : %s/docs", url)
-    logger.info("  (istalgan qurilmadan ochish mumkin)")
-    logger.info("=" * 54)
+    logger.info("  (istalgan qurilmadan, istalgan joydan ochish mumkin)")
+    logger.info("=" * 58)
     logger.info("")
     return url
 
@@ -529,7 +533,9 @@ def main():
     p.add_argument("--share",     action="store_true",
                    help="ngrok tunnel orqali public URL yaratish")
     p.add_argument("--authtoken", default=None,
-                   help="ngrok authtoken (ixtiyoriy, ngrok.com dan olish mumkin)")
+                   help="ngrok authtoken (ngrok.com dan olish mumkin)")
+    p.add_argument("--domain",    default=None,
+                   help="ngrok static domain (e.g. gap-tiring-omit.ngrok-free.dev)")
     p.add_argument("--preload",   action="store_true")
     args = p.parse_args()
 
@@ -545,7 +551,7 @@ def main():
 
     # --share: ngrok tunnel ishga tushirish
     if args.share:
-        _start_ngrok(args.port, args.authtoken)
+        _start_ngrok(args.port, args.authtoken, args.domain)
 
     logger.info("Lookzi local: http://%s:%d", args.host, args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning",

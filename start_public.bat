@@ -7,12 +7,12 @@ echo  =====================================================
 echo   Lookzi Virtual Try-On  ^|  Public Server (ngrok)
 echo  =====================================================
 echo.
-echo  Ish PC ni server sifatida ishga tushirish uchun.
-echo  Ngrok URL paydo bo'lgandan keyin uni uydan oching.
+echo  URL (doimiy, hech qachon o'zgarmaydi):
+echo  https://gap-tiring-omit.ngrok-free.dev
 echo.
 echo  To'xtatish uchun: Ctrl+C
 echo.
 
-.venv\Scripts\python.exe app.py --preload --share
+.venv\Scripts\python.exe app.py --preload --share --domain gap-tiring-omit.ngrok-free.dev
 
 pause
