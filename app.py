@@ -496,13 +496,41 @@ def build_ui() -> gr.Blocks:
     return demo
 
 
+# ── Tunnel (ngrok) ────────────────────────────────────────────────────────
+def _start_ngrok(port: int, authtoken: str | None = None):
+    """Start ngrok tunnel and print public URL."""
+    try:
+        from pyngrok import ngrok, conf as ngrok_conf
+    except ImportError:
+        logger.error("pyngrok not installed. Run:  pip install pyngrok")
+        return
+
+    if authtoken:
+        ngrok_conf.get_default().auth_token = authtoken
+
+    tunnel = ngrok.connect(port, "http")
+    url    = tunnel.public_url
+
+    logger.info("")
+    logger.info("=" * 54)
+    logger.info("  LOOKZI PUBLIC URL : %s", url)
+    logger.info("  API DOCS          : %s/docs", url)
+    logger.info("  (istalgan qurilmadan ochish mumkin)")
+    logger.info("=" * 54)
+    logger.info("")
+    return url
+
+
 # ── Entry point ───────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(description="Lookzi Virtual Try-On Server")
-    p.add_argument("--host",    default="127.0.0.1")
-    p.add_argument("--port",    default=7860, type=int)
-    p.add_argument("--share",   action="store_true")
-    p.add_argument("--preload", action="store_true")
+    p.add_argument("--host",      default="127.0.0.1")
+    p.add_argument("--port",      default=7860, type=int)
+    p.add_argument("--share",     action="store_true",
+                   help="ngrok tunnel orqali public URL yaratish")
+    p.add_argument("--authtoken", default=None,
+                   help="ngrok authtoken (ixtiyoriy, ngrok.com dan olish mumkin)")
+    p.add_argument("--preload",   action="store_true")
     args = p.parse_args()
 
     if torch.cuda.is_available():
@@ -515,9 +543,13 @@ def main():
     demo = build_ui()
     app  = gr.mount_gradio_app(api, demo, path="/")
 
-    logger.info("Lookzi running at http://%s:%d", args.host, args.port)
+    # --share: ngrok tunnel ishga tushirish
+    if args.share:
+        _start_ngrok(args.port, args.authtoken)
+
+    logger.info("Lookzi local: http://%s:%d", args.host, args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning",
-                timeout_keep_alive=300)
+                timeout_keep_alive=600)
 
 
 if __name__ == "__main__":
