@@ -15,6 +15,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import io
 import gc
+import os as _os_mod
 import sys
 import uuid
 import base64
@@ -23,6 +24,9 @@ import logging
 import argparse
 import traceback
 import time
+import json as _json
+import signal
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 logging.basicConfig(
@@ -42,13 +46,58 @@ import torch
 import gradio as gr
 from PIL import Image
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, PlainTextResponse
 import uvicorn
 
 ROOT    = Path(__file__).parent
 WEIGHTS = ROOT / "weights"
 OUTPUTS = ROOT / "outputs"
 OUTPUTS.mkdir(exist_ok=True)
+
+# ── Server tracking & admin key ───────────────────────────────────────────
+SERVER_START_TIME = time.time()
+_log_file_path: str | None = None
+
+
+def _setup_file_logging(log_path: str):
+    """Replace stream handlers with a rotating file handler (no duplicate lines)."""
+    global _log_file_path
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    root = logging.getLogger()
+    for h in root.handlers[:]:
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
+            root.removeHandler(h)
+    fh = RotatingFileHandler(
+        log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    fh.setFormatter(
+        logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s", datefmt="%H:%M:%S")
+    )
+    root.addHandler(fh)
+    _log_file_path = log_path
+    logger.info("File logging: %s", log_path)
+
+
+def _load_admin_key() -> str:
+    """Load or auto-generate the admin panel secret key (saved in server_config.json)."""
+    config_path = ROOT / "server_config.json"
+    try:
+        if config_path.exists():
+            cfg = _json.loads(config_path.read_text(encoding="utf-8"))
+            if key := cfg.get("admin_key"):
+                return key
+    except Exception:
+        pass
+    import secrets
+    key = secrets.token_urlsafe(16)
+    try:
+        config_path.write_text(_json.dumps({"admin_key": key}, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return key
+
+
+ADMIN_KEY: str = _load_admin_key()
 
 # ── Category map: UI label → pipeline value ───────────────────────────────
 CATEGORY_MAP = {
@@ -189,6 +238,201 @@ async def api_tryon(
         return JSONResponse({"status": "ok", "message": msg,
                              "image_base64": base64.b64encode(buf.getvalue()).decode()})
     return StreamingResponse(buf, media_type="image/png", headers={"X-Lookzi-Info": msg})
+
+
+# ── Admin panel ───────────────────────────────────────────────────────────
+_ADMIN_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lookzi Admin</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    background: #0a0a0a; color: #e0e0e0;
+    font-family: 'Inter', 'Segoe UI', sans-serif;
+    padding: 32px 24px; max-width: 960px; margin: 0 auto;
+}
+h1 {
+    font-size: 1.8rem; font-weight: 800; margin-bottom: 6px;
+    background: linear-gradient(135deg, #fff 0%, #a0a0ff 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.sub { color: #333; font-size: 0.78rem; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 32px; }
+h2 { font-size: 0.72rem; color: #444; font-weight: 700; text-transform: uppercase;
+     letter-spacing: 2px; margin: 28px 0 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.stat { background: #0f0f0f; border: 1px solid #1e1e1e; border-radius: 12px; padding: 16px; }
+.stat .lbl { font-size: 0.68rem; color: #444; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 8px; }
+.stat .val { font-size: 1.05rem; font-weight: 700; color: #fff; word-break: break-all; }
+.val.g { color: #4ade80; } .val.y { color: #facc15; } .val.r { color: #f87171; }
+.badge { display: inline-block; padding: 3px 11px; border-radius: 100px; font-size: 0.72rem; font-weight: 700; }
+.badge.ok { background: #052e16; color: #4ade80; border: 1px solid #14532d; }
+.badge.err { background: #2d0000; color: #f87171; border: 1px solid #7f1d1d; }
+.card { background: #0f0f0f; border: 1px solid #1e1e1e; border-radius: 14px; padding: 20px; }
+.btn { display: inline-block; padding: 11px 26px; border: none; border-radius: 10px;
+       font-size: 0.88rem; font-weight: 700; cursor: pointer;
+       transition: opacity 0.15s, transform 0.1s; letter-spacing: 0.5px; }
+.btn:hover { opacity: 0.85; transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
+.btn-restart { background: linear-gradient(135deg, #dc2626, #b91c1c); color: #fff; }
+.btn-sm { background: #1a1a1a; border: 1px solid #2a2a2a; color: #666;
+          padding: 6px 14px; font-size: 0.72rem; margin-left: 8px; }
+#logs-box {
+    background: #060606; border: 1px solid #1a1a1a; border-radius: 10px;
+    padding: 16px; font-family: 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.75rem; line-height: 1.6; color: #6b7280;
+    max-height: 460px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all; margin-top: 10px;
+}
+.timer { color: #2a2a2a; font-size: 0.72rem; margin-left: 14px; vertical-align: middle; }
+#toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px;
+         border-radius: 10px; font-size: 0.85rem; display: none; z-index: 999; }
+</style>
+</head>
+<body>
+<h1>Lookzi Admin</h1>
+<div class="sub">Server Management Panel</div>
+
+<h2>System Status</h2>
+<div class="grid">
+  <div class="stat"><div class="lbl">Server</div><div class="val" id="s-status">...</div></div>
+  <div class="stat"><div class="lbl">Uptime</div><div class="val" id="s-uptime">...</div></div>
+  <div class="stat"><div class="lbl">Model</div><div class="val" id="s-model">...</div></div>
+  <div class="stat"><div class="lbl">GPU</div><div class="val" id="s-gpu">...</div></div>
+  <div class="stat"><div class="lbl">VRAM Used</div><div class="val" id="s-vram">...</div></div>
+  <div class="stat"><div class="lbl">VRAM Free</div><div class="val" id="s-vram-free">...</div></div>
+</div>
+
+<h2>Actions</h2>
+<div class="card" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+  <button class="btn btn-restart" onclick="doRestart()">&#x1F504; Restart Server</button>
+  <button class="btn btn-sm" onclick="refreshAll()">&#x21BB; Refresh Now</button>
+  <span class="timer" id="timer">auto-refresh in 15s</span>
+</div>
+
+<h2>Server Logs <button class="btn btn-sm" onclick="loadLogs()">&#x21BB;</button></h2>
+<div id="logs-box">Loading...</div>
+
+<div id="toast"></div>
+<script>
+const KEY = new URLSearchParams(location.search).get('key') || '';
+
+function toast(msg, ok) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.background = ok ? '#052e16' : '#2d0000';
+    t.style.color = ok ? '#4ade80' : '#f87171';
+    t.style.border = '1px solid ' + (ok ? '#14532d' : '#7f1d1d');
+    t.style.display = 'block';
+    setTimeout(() => t.style.display = 'none', 3500);
+}
+
+async function fetchStatus() {
+    try {
+        const [h, s] = await Promise.all([
+            fetch('/api/health').then(r => r.json()),
+            fetch('/admin/status?key=' + KEY).then(r => r.json())
+        ]);
+        document.getElementById('s-status').innerHTML = '<span class="badge ok">ONLINE</span>';
+        document.getElementById('s-uptime').textContent = s.uptime_human || '-';
+        const ml = h.model_loaded;
+        document.getElementById('s-model').textContent = ml ? 'Loaded ✓' : 'Not loaded';
+        document.getElementById('s-model').className = 'val ' + (ml ? 'g' : 'y');
+        if (h.gpu) {
+            document.getElementById('s-gpu').textContent = h.gpu.name.replace('NVIDIA GeForce ', '');
+            const used = h.gpu.vram_total_gb - h.gpu.vram_free_gb;
+            const pct = used / h.gpu.vram_total_gb;
+            document.getElementById('s-vram').textContent = used.toFixed(1) + ' GB';
+            document.getElementById('s-vram').className = 'val ' + (pct > 0.88 ? 'r' : 'g');
+            document.getElementById('s-vram-free').textContent = h.gpu.vram_free_gb.toFixed(1) + ' GB';
+            document.getElementById('s-vram-free').className = 'val ' + (h.gpu.vram_free_gb < 1 ? 'r' : 'g');
+        }
+    } catch(e) {
+        document.getElementById('s-status').innerHTML = '<span class="badge err">OFFLINE</span>';
+        ['s-uptime','s-model','s-gpu','s-vram','s-vram-free'].forEach(id => {
+            document.getElementById(id).textContent = '-';
+        });
+    }
+}
+
+async function loadLogs() {
+    try {
+        const r = await fetch('/admin/logs?key=' + KEY);
+        if (!r.ok) { document.getElementById('logs-box').textContent = '[Access denied]'; return; }
+        const text = await r.text();
+        const box = document.getElementById('logs-box');
+        box.textContent = text || '(no logs yet)';
+        box.scrollTop = box.scrollHeight;
+    } catch(e) { document.getElementById('logs-box').textContent = 'Error: ' + e; }
+}
+
+async function doRestart() {
+    if (!confirm('Restart the Lookzi server?\\n\\nThis will interrupt active requests.\\nThe wrapper script will bring it back online in ~20 seconds.')) return;
+    try {
+        const r = await fetch('/admin/restart?key=' + KEY, {method:'POST'});
+        const d = await r.json();
+        toast(d.message || 'Restarting...', true);
+    } catch(e) { toast('Error: ' + e, false); }
+}
+
+function refreshAll() { fetchStatus(); loadLogs(); }
+
+let cd = 15;
+setInterval(() => {
+    cd--;
+    document.getElementById('timer').textContent = 'auto-refresh in ' + cd + 's';
+    if (cd <= 0) { cd = 15; refreshAll(); }
+}, 1000);
+
+refreshAll();
+</script>
+</body>
+</html>"""
+
+
+@api.get("/admin")
+async def admin_page(key: str = ""):
+    if key != ADMIN_KEY:
+        raise HTTPException(403, "Access denied. Add ?key=YOUR_ADMIN_KEY to the URL.")
+    return HTMLResponse(_ADMIN_HTML)
+
+
+@api.get("/admin/status")
+async def admin_status(key: str = ""):
+    if key != ADMIN_KEY:
+        raise HTTPException(403, "Access denied")
+    uptime = int(time.time() - SERVER_START_TIME)
+    h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
+    return {
+        "uptime_seconds": uptime,
+        "uptime_human": f"{h}h {m}m {s}s",
+        "model_loaded": _pipeline is not None,
+    }
+
+
+@api.get("/admin/logs")
+async def admin_logs(key: str = "", lines: int = 100):
+    if key != ADMIN_KEY:
+        raise HTTPException(403, "Access denied")
+    if _log_file_path and Path(_log_file_path).exists():
+        with open(_log_file_path, encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        return PlainTextResponse("".join(all_lines[-lines:]))
+    return PlainTextResponse("(No log file configured. Start server with --log-file logs/server.log)")
+
+
+@api.post("/admin/restart")
+async def admin_restart(key: str = ""):
+    if key != ADMIN_KEY:
+        raise HTTPException(403, "Access denied")
+    import threading
+    def _do_exit():
+        time.sleep(0.8)
+        _os_mod._exit(0)   # server_runner.bat loop will restart automatically
+    threading.Thread(target=_do_exit, daemon=True).start()
+    return {"status": "ok", "message": "Restarting in 1s — back online in ~20 seconds"}
 
 
 # ── UI CSS ────────────────────────────────────────────────────────────────
@@ -537,7 +781,13 @@ def main():
     p.add_argument("--domain",    default=None,
                    help="ngrok static domain (e.g. gap-tiring-omit.ngrok-free.dev)")
     p.add_argument("--preload",   action="store_true")
+    p.add_argument("--log-file",  default=None,
+                   help="Write logs to file (e.g. logs/server.log). Used by server_runner.bat.")
     args = p.parse_args()
+
+    # File logging must be set up before anything else logs
+    if args.log_file:
+        _setup_file_logging(args.log_file)
 
     if torch.cuda.is_available():
         prop = torch.cuda.get_device_properties(0)
@@ -549,11 +799,19 @@ def main():
     demo = build_ui()
     app  = gr.mount_gradio_app(api, demo, path="/")
 
-    # --share: ngrok tunnel ishga tushirish
+    # --share: ngrok tunnel
     if args.share:
         _start_ngrok(args.port, args.authtoken, args.domain)
 
-    logger.info("Lookzi local: http://%s:%d", args.host, args.port)
+    logger.info("Lookzi local : http://%s:%d", args.host, args.port)
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("  ADMIN PANEL  : http://%s:%d/admin?key=%s", args.host, args.port, ADMIN_KEY)
+    if args.share and args.domain:
+        logger.info("  ADMIN (ngrok): https://%s/admin?key=%s", args.domain, ADMIN_KEY)
+    logger.info("=" * 60)
+    logger.info("")
+
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning",
                 timeout_keep_alive=600)
 

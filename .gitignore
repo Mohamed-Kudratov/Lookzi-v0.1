@@ -85,6 +85,9 @@ Thumbs.db
 *.log
 logs/
 
+# Server secrets (admin key — generated locally, never commit)
+server_config.json
+
 # Output directories
 outputs/
 results/
