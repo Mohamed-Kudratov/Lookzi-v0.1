@@ -131,6 +131,7 @@ DEFAULT_SEG_FREE  = True
 
 # ── Pipeline singleton ────────────────────────────────────────────────────
 _pipeline = None
+_sleeping  = False   # True = user manually put server to sleep
 
 def get_pipeline():
     global _pipeline
@@ -142,6 +143,28 @@ def get_pipeline():
     logger.info("Loading Lookzi model...")
     _pipeline = TryOnPipeline(weights_dir=str(WEIGHTS))
     logger.info("Model ready on: %s", _pipeline.device)
+    return _pipeline
+
+
+def unload_pipeline():
+    """Remove model from GPU memory (sleep mode)."""
+    global _pipeline, _sleeping
+    if _pipeline is not None:
+        del _pipeline
+        _pipeline = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info("Model unloaded — sleep mode (VRAM freed)")
+    _sleeping = True
+
+
+def wake_pipeline():
+    """Reload model onto GPU (wake mode)."""
+    global _sleeping
+    _sleeping = False
+    get_pipeline()   # loads if not already loaded
+    logger.info("Model loaded — wake mode")
     return _pipeline
 
 
@@ -157,6 +180,8 @@ def run_tryon(
     segmentation_free:  bool  = DEFAULT_SEG_FREE,
 ) -> tuple[Image.Image | None, str]:
 
+    if _sleeping:
+        return None, "Server uxlayapti. Admin paneldan Wake tugmasini bosing."
     if person_image is None:
         return None, "Please upload a person photo."
     if garment_image is None:
@@ -212,7 +237,9 @@ api = FastAPI(
 
 @api.get("/api/health")
 def health():
-    info: dict = {"status": "ok", "brand": "Lookzi", "model_loaded": _pipeline is not None}
+    info: dict = {"status": "ok", "brand": "Lookzi",
+                  "model_loaded": _pipeline is not None,
+                  "sleeping": _sleeping}
     if torch.cuda.is_available():
         prop  = torch.cuda.get_device_properties(0)
         total = prop.total_memory / 1e9
@@ -296,6 +323,8 @@ h2 { font-size: 0.72rem; color: #444; font-weight: 700; text-transform: uppercas
 .btn:active { transform: translateY(0); }
 .btn-restart { background: linear-gradient(135deg, #dc2626, #b91c1c); color: #fff; }
 .btn-deploy  { background: linear-gradient(135deg, #16a34a, #15803d); color: #fff; }
+.btn-sleep   { background: linear-gradient(135deg, #d97706, #b45309); color: #fff; }
+.btn-wake    { background: linear-gradient(135deg, #0891b2, #0e7490); color: #fff; }
 .btn-sm { background: #1a1a1a; border: 1px solid #2a2a2a; color: #666;
           padding: 6px 14px; font-size: 0.72rem; margin-left: 8px; }
 #deploy-out { display:none; margin-top:10px; padding:10px 14px;
@@ -322,6 +351,7 @@ h2 { font-size: 0.72rem; color: #444; font-weight: 700; text-transform: uppercas
   <div class="stat"><div class="lbl">Server</div><div class="val" id="s-status">...</div></div>
   <div class="stat"><div class="lbl">Uptime</div><div class="val" id="s-uptime">...</div></div>
   <div class="stat"><div class="lbl">Model</div><div class="val" id="s-model">...</div></div>
+  <div class="stat"><div class="lbl">Mode</div><div class="val" id="s-mode">...</div></div>
   <div class="stat"><div class="lbl">GPU</div><div class="val" id="s-gpu">...</div></div>
   <div class="stat"><div class="lbl">VRAM Used</div><div class="val" id="s-vram">...</div></div>
   <div class="stat"><div class="lbl">VRAM Free</div><div class="val" id="s-vram-free">...</div></div>
@@ -330,9 +360,11 @@ h2 { font-size: 0.72rem; color: #444; font-weight: 700; text-transform: uppercas
 <h2>Actions</h2>
 <div class="card">
   <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-    <button class="btn btn-deploy" onclick="doDeploy()">&#x1F680; Deploy (git pull)</button>
+    <button class="btn btn-deploy"  onclick="doDeploy()">&#x1F680; Deploy</button>
     <button class="btn btn-restart" onclick="doRestart()">&#x1F504; Restart</button>
-    <button class="btn btn-sm" onclick="refreshAll()">&#x21BB; Refresh</button>
+    <button class="btn btn-sleep"   id="btn-sleep" onclick="doSleep()" style="display:none">&#x1F4A4; Sleep</button>
+    <button class="btn btn-wake"    id="btn-wake"  onclick="doWake()"  style="display:none">&#x26A1; Wake</button>
+    <button class="btn btn-sm"      onclick="refreshAll()">&#x21BB; Refresh</button>
     <span class="timer" id="timer">auto-refresh in 15s</span>
   </div>
   <div id="deploy-out"></div>
@@ -364,8 +396,13 @@ async function fetchStatus() {
         document.getElementById('s-status').innerHTML = '<span class="badge ok">ONLINE</span>';
         document.getElementById('s-uptime').textContent = s.uptime_human || '-';
         const ml = h.model_loaded;
+        const sl = h.sleeping;
         document.getElementById('s-model').textContent = ml ? 'Loaded ✓' : 'Not loaded';
         document.getElementById('s-model').className = 'val ' + (ml ? 'g' : 'y');
+        document.getElementById('s-mode').textContent  = sl ? 'Sleep 💤' : 'Active ⚡';
+        document.getElementById('s-mode').className    = 'val ' + (sl ? 'y' : 'g');
+        document.getElementById('btn-sleep').style.display = (!sl && ml) ? '' : 'none';
+        document.getElementById('btn-wake').style.display  = sl ? '' : 'none';
         if (h.gpu) {
             document.getElementById('s-gpu').textContent = h.gpu.name.replace('NVIDIA GeForce ', '');
             const used = h.gpu.vram_total_gb - h.gpu.vram_free_gb;
@@ -400,6 +437,26 @@ async function doRestart() {
         const r = await fetch('/admin/restart?key=' + KEY, {method:'POST'});
         const d = await r.json();
         toast(d.message || 'Restarting...', true);
+    } catch(e) { toast('Error: ' + e, false); }
+}
+
+async function doSleep() {
+    if (!confirm('Modelni GPU dan tushirish (sleep)?\n\nVRAM bo\'shaydi. Wake tugmasi bilan qayta yoqiladi (15s).')) return;
+    try {
+        const r = await fetch('/admin/sleep?key=' + KEY, {method:'POST'});
+        const d = await r.json();
+        toast(d.message || 'Sleeping...', true);
+        setTimeout(refreshAll, 1500);
+    } catch(e) { toast('Error: ' + e, false); }
+}
+
+async function doWake() {
+    toast('Model yuklanmoqda (~15s)...', true);
+    try {
+        const r = await fetch('/admin/wake?key=' + KEY, {method:'POST'});
+        const d = await r.json();
+        toast(d.message || 'Awake!', true);
+        setTimeout(refreshAll, 2000);
     } catch(e) { toast('Error: ' + e, false); }
 }
 
@@ -477,6 +534,33 @@ async def admin_restart(key: str = ""):
         _os_mod._exit(0)   # NSSM restarts automatically
     threading.Thread(target=_do_exit, daemon=True).start()
     return {"status": "ok", "message": "Restarting in 1s — back online in ~40 seconds"}
+
+
+@api.post("/admin/sleep")
+async def admin_sleep(key: str = ""):
+    if key != ADMIN_KEY:
+        raise HTTPException(403, "Access denied")
+    if not _pipeline:
+        return {"status": "ok", "message": "Model allaqachon yuklanmagan"}
+    unload_pipeline()
+    vram = ""
+    if torch.cuda.is_available():
+        free = torch.cuda.get_device_properties(0).total_memory / 1e9
+        vram = f" | {free:.0f} GB VRAM bo'shadi"
+    return {"status": "ok", "message": f"Server uxlayapti 💤{vram}"}
+
+
+@api.post("/admin/wake")
+async def admin_wake(key: str = ""):
+    if key != ADMIN_KEY:
+        raise HTTPException(403, "Access denied")
+    if _pipeline:
+        return {"status": "ok", "message": "Model allaqachon yuklangan ⚡"}
+    import threading
+    def _load():
+        wake_pipeline()
+    threading.Thread(target=_load, daemon=True).start()
+    return {"status": "ok", "message": "Model yuklanmoqda (~15s)... ⚡"}
 
 
 @api.post("/admin/deploy")
