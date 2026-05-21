@@ -756,8 +756,13 @@ def _start_ngrok(port: int, authtoken: str | None = None, domain: str | None = N
     if domain:
         options["domain"] = domain
 
-    tunnel = ngrok.connect(port, "http", **options)
-    url    = tunnel.public_url
+    try:
+        tunnel = ngrok.connect(port, "http", **options)
+        url    = tunnel.public_url
+    except Exception as e:
+        logger.error("ngrok tunnel failed: %s", e)
+        logger.warning("Running in LOCAL mode only (fix ngrok token to enable public access)")
+        return None
 
     logger.info("")
     logger.info("=" * 58)
