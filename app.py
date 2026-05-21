@@ -99,6 +99,24 @@ def _load_admin_key() -> str:
 
 ADMIN_KEY: str = _load_admin_key()
 
+
+def _free_port(port: int):
+    """Kill any process holding the given port so we can bind cleanly."""
+    import subprocess as _sp
+    try:
+        r = _sp.run(["netstat", "-ano"], capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            if f":{port}" in line and "LISTEN" in line:
+                parts = line.strip().split()
+                pid = int(parts[-1])
+                if pid > 4:
+                    _sp.run(["taskkill", "/F", "/PID", str(pid)],
+                            capture_output=True, timeout=5)
+                    logger.info("Freed port %d (killed PID %d)", port, pid)
+    except Exception as e:
+        logger.warning("Could not free port %d: %s", port, e)
+
+
 # ── Category map: UI label → pipeline value ───────────────────────────────
 CATEGORY_MAP = {
     "Upper":   "tops",
@@ -853,6 +871,9 @@ def main():
     # File logging must be set up before anything else logs
     if args.log_file:
         _setup_file_logging(args.log_file)
+
+    # Free port before starting (kills stale process from previous run)
+    _free_port(args.port)
 
     if torch.cuda.is_available():
         prop = torch.cuda.get_device_properties(0)
