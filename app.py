@@ -376,6 +376,7 @@ h2 { font-size: 0.72rem; color: #444; font-weight: 700; text-transform: uppercas
 <div id="toast"></div>
 <script>
 const KEY = new URLSearchParams(location.search).get('key') || '';
+const H   = {'ngrok-skip-browser-warning': '1', 'Content-Type': 'application/json'};
 
 function toast(msg, ok) {
     const t = document.getElementById('toast');
@@ -390,8 +391,8 @@ function toast(msg, ok) {
 async function fetchStatus() {
     try {
         const [h, s] = await Promise.all([
-            fetch('/api/health').then(r => r.json()),
-            fetch('/admin/status?key=' + KEY).then(r => r.json())
+            fetch('/api/health', {headers: H}).then(r => r.json()),
+            fetch('/admin/status?key=' + KEY, {headers: H}).then(r => r.json())
         ]);
         document.getElementById('s-status').innerHTML = '<span class="badge ok">ONLINE</span>';
         document.getElementById('s-uptime').textContent = s.uptime_human || '-';
@@ -422,7 +423,7 @@ async function fetchStatus() {
 
 async function loadLogs() {
     try {
-        const r = await fetch('/admin/logs?key=' + KEY);
+        const r = await fetch('/admin/logs?key=' + KEY, {headers: H});
         if (!r.ok) { document.getElementById('logs-box').textContent = '[Access denied]'; return; }
         const text = await r.text();
         const box = document.getElementById('logs-box');
@@ -434,7 +435,7 @@ async function loadLogs() {
 async function doRestart() {
     if (!confirm('Restart the Lookzi server?\\n\\nThis will interrupt active requests.\\nBack online in ~40 seconds.')) return;
     try {
-        const r = await fetch('/admin/restart?key=' + KEY, {method:'POST'});
+        const r = await fetch('/admin/restart?key=' + KEY, {method:'POST', headers: H});
         const d = await r.json();
         toast(d.message || 'Restarting...', true);
     } catch(e) { toast('Error: ' + e, false); }
@@ -443,7 +444,7 @@ async function doRestart() {
 async function doSleep() {
     if (!confirm('Modelni GPU dan tushirish (sleep)?\n\nVRAM bo\'shaydi. Wake tugmasi bilan qayta yoqiladi (15s).')) return;
     try {
-        const r = await fetch('/admin/sleep?key=' + KEY, {method:'POST'});
+        const r = await fetch('/admin/sleep?key=' + KEY, {method:'POST', headers: H});
         const d = await r.json();
         toast(d.message || 'Sleeping...', true);
         setTimeout(refreshAll, 1500);
@@ -453,7 +454,7 @@ async function doSleep() {
 async function doWake() {
     toast('Model yuklanmoqda (~15s)...', true);
     try {
-        const r = await fetch('/admin/wake?key=' + KEY, {method:'POST'});
+        const r = await fetch('/admin/wake?key=' + KEY, {method:'POST', headers: H});
         const d = await r.json();
         toast(d.message || 'Awake!', true);
         setTimeout(refreshAll, 2000);
@@ -466,7 +467,7 @@ async function doDeploy() {
     out.style.display = 'block';
     out.textContent = 'git pull bajarilmoqda...';
     try {
-        const r = await fetch('/admin/deploy?key=' + KEY, {method:'POST'});
+        const r = await fetch('/admin/deploy?key=' + KEY, {method:'POST', headers: H});
         const d = await r.json();
         out.textContent = d.message || 'Deploy started';
         out.style.borderColor = d.status === 'ok' ? '#1a3a1a' : '#3a1a1a';
