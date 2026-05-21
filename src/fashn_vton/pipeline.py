@@ -70,9 +70,15 @@ class TryOnPipeline:
         self.logger.info(f"Using device: {self.device}")
 
         # Setup inference dtype
+        # bfloat16 → Ada Lovelace / Ampere (RTX 30xx/40xx)
+        # float16  → Turing / Volta (T4, V100, RTX 20xx) — Colab T4
+        # float32  → CPU or unsupported GPU
         self.inference_dtype = torch.float32
-        if self.device.type == "cuda" and torch.cuda.is_bf16_supported():
-            self.inference_dtype = torch.bfloat16
+        if self.device.type == "cuda":
+            if torch.cuda.is_bf16_supported():
+                self.inference_dtype = torch.bfloat16
+            else:
+                self.inference_dtype = torch.float16
         self.logger.info(f"Using dtype: {self.inference_dtype}")
 
         # Validate weights exist
