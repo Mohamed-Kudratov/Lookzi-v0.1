@@ -277,8 +277,12 @@ h2 { font-size: 0.72rem; color: #444; font-weight: 700; text-transform: uppercas
 .btn:hover { opacity: 0.85; transform: translateY(-1px); }
 .btn:active { transform: translateY(0); }
 .btn-restart { background: linear-gradient(135deg, #dc2626, #b91c1c); color: #fff; }
+.btn-deploy  { background: linear-gradient(135deg, #16a34a, #15803d); color: #fff; }
 .btn-sm { background: #1a1a1a; border: 1px solid #2a2a2a; color: #666;
           padding: 6px 14px; font-size: 0.72rem; margin-left: 8px; }
+#deploy-out { display:none; margin-top:10px; padding:10px 14px;
+              background:#060606; border:1px solid #1a3a1a; border-radius:8px;
+              font-family:monospace; font-size:0.78rem; color:#4ade80; }
 #logs-box {
     background: #060606; border: 1px solid #1a1a1a; border-radius: 10px;
     padding: 16px; font-family: 'Cascadia Code', 'Consolas', monospace;
@@ -306,10 +310,14 @@ h2 { font-size: 0.72rem; color: #444; font-weight: 700; text-transform: uppercas
 </div>
 
 <h2>Actions</h2>
-<div class="card" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-  <button class="btn btn-restart" onclick="doRestart()">&#x1F504; Restart Server</button>
-  <button class="btn btn-sm" onclick="refreshAll()">&#x21BB; Refresh Now</button>
-  <span class="timer" id="timer">auto-refresh in 15s</span>
+<div class="card">
+  <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+    <button class="btn btn-deploy" onclick="doDeploy()">&#x1F680; Deploy (git pull)</button>
+    <button class="btn btn-restart" onclick="doRestart()">&#x1F504; Restart</button>
+    <button class="btn btn-sm" onclick="refreshAll()">&#x21BB; Refresh</button>
+    <span class="timer" id="timer">auto-refresh in 15s</span>
+  </div>
+  <div id="deploy-out"></div>
 </div>
 
 <h2>Server Logs <button class="btn btn-sm" onclick="loadLogs()">&#x21BB;</button></h2>
@@ -369,12 +377,30 @@ async function loadLogs() {
 }
 
 async function doRestart() {
-    if (!confirm('Restart the Lookzi server?\\n\\nThis will interrupt active requests.\\nThe wrapper script will bring it back online in ~20 seconds.')) return;
+    if (!confirm('Restart the Lookzi server?\\n\\nThis will interrupt active requests.\\nBack online in ~40 seconds.')) return;
     try {
         const r = await fetch('/admin/restart?key=' + KEY, {method:'POST'});
         const d = await r.json();
         toast(d.message || 'Restarting...', true);
     } catch(e) { toast('Error: ' + e, false); }
+}
+
+async function doDeploy() {
+    if (!confirm('Deploy latest code?\\n\\n1. git pull (GitHub dan yangi kod)\\n2. Server qayta ishga tushadi (~40s)')) return;
+    const out = document.getElementById('deploy-out');
+    out.style.display = 'block';
+    out.textContent = 'git pull bajarilmoqda...';
+    try {
+        const r = await fetch('/admin/deploy?key=' + KEY, {method:'POST'});
+        const d = await r.json();
+        out.textContent = d.message || 'Deploy started';
+        out.style.borderColor = d.status === 'ok' ? '#1a3a1a' : '#3a1a1a';
+        out.style.color = d.status === 'ok' ? '#4ade80' : '#f87171';
+        toast(d.status === 'ok' ? 'Deploying...' : (d.detail || 'Error'), d.status === 'ok');
+    } catch(e) {
+        out.textContent = 'Error: ' + e;
+        out.style.color = '#f87171';
+    }
 }
 
 function refreshAll() { fetchStatus(); loadLogs(); }
@@ -430,9 +456,43 @@ async def admin_restart(key: str = ""):
     import threading
     def _do_exit():
         time.sleep(0.8)
-        _os_mod._exit(0)   # server_runner.bat loop will restart automatically
+        _os_mod._exit(0)   # NSSM restarts automatically
     threading.Thread(target=_do_exit, daemon=True).start()
-    return {"status": "ok", "message": "Restarting in 1s — back online in ~20 seconds"}
+    return {"status": "ok", "message": "Restarting in 1s — back online in ~40 seconds"}
+
+
+@api.post("/admin/deploy")
+async def admin_deploy(key: str = ""):
+    if key != ADMIN_KEY:
+        raise HTTPException(403, "Access denied")
+    import subprocess, threading
+    def _do_deploy():
+        time.sleep(0.3)
+        try:
+            logger.info("Deploy: running git pull...")
+            result = subprocess.run(
+                ["git", "-c", "safe.directory=*", "pull", "--ff-only"],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env={**_os_mod.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            out = (result.stdout + result.stderr).strip()
+            logger.info("Deploy git pull: %s", out)
+            if result.returncode == 0:
+                logger.info("Deploy: OK — restarting service...")
+                time.sleep(1)
+                _os_mod._exit(0)   # NSSM restarts with new code
+            else:
+                logger.error("Deploy: git pull failed (code %d): %s", result.returncode, out)
+        except Exception as e:
+            logger.error("Deploy error: %s", e)
+    threading.Thread(target=_do_deploy, daemon=True).start()
+    return {
+        "status": "ok",
+        "message": "git pull bajarilmoqda → server qayta ishga tushadi (~40s)"
+    }
 
 
 # ── UI CSS ────────────────────────────────────────────────────────────────
