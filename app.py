@@ -248,6 +248,11 @@ except Exception as _e:
     logger.warning("Test review yuklanmadi: %s", _e)
 
 
+@api.get("/api/ping")
+def api_ping():
+    return PlainTextResponse("ok")
+
+
 @api.get("/api/health")
 def health():
     info: dict = {"status": "ok", "brand": "Lookzi",
@@ -304,11 +309,13 @@ def _render_deploy_waiting(key: str, git_out: str) -> str:
     import html as _html
     k   = _html.escape(key, quote=True)
     out = _html.escape(git_out)
+    admin_url = f"/admin?key={k}&msg=Deploy+muvaffaqiyatli&ok=1"
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="55;url={admin_url}">
 <title>Deploying...</title>
 <style>
 * {{ box-sizing:border-box; margin:0; padding:0; }}
@@ -325,51 +332,41 @@ h1 {{ font-size:2rem; font-weight:800; margin-bottom:8px; }}
 .git-box {{ background:#060606; border:1px solid #14532d; border-radius:10px;
             padding:16px 20px; font-family:'Consolas',monospace; font-size:0.78rem;
             color:#4ade80; max-width:640px; width:100%; text-align:left;
-            white-space:pre-wrap; word-break:break-all; margin-bottom:24px; }}
-.status {{ color:#555; font-size:0.88rem; margin-bottom:8px; }}
-.dot {{ display:inline-block; animation:blink 1.2s infinite; }}
-@keyframes blink {{ 0%,100%{{opacity:1}} 50%{{opacity:0.2}} }}
-.ok {{ color:#4ade80; font-weight:700; font-size:1rem; }}
+            white-space:pre-wrap; word-break:break-all; margin-bottom:28px; }}
+.status {{ color:#555; font-size:0.88rem; margin-bottom:6px; }}
+.ok  {{ color:#4ade80; font-weight:700; }}
+.btn {{ display:none; margin-top:20px; padding:12px 32px; background:#16a34a;
+        color:#fff; border-radius:10px; text-decoration:none;
+        font-weight:700; font-size:0.9rem; }}
 </style>
 </head>
 <body>
 <h1>🚀 Deploying</h1>
 <div class="sub">git pull muvaffaqiyatli</div>
-
-<div class="spinner" id="spin"></div>
-
+<div class="spinner" id="sp"></div>
 <div class="git-box">{out}</div>
-
-<p class="status" id="st">Server qayta ishga tushmoqda<span class="dot">...</span></p>
-<p style="color:#333;font-size:0.78rem" id="elapsed">0s</p>
+<p class="status" id="st">Server qayta ishga tushmoqda...</p>
+<p style="color:#2a2a2a;font-size:0.8rem;margin-top:6px" id="el">0s</p>
+<a class="btn" id="btn" href="{admin_url}">Admin panelga o'tish &rarr;</a>
 
 <script>
-const KEY = '{k}';
-const H   = {{'ngrok-skip-browser-warning':'1','Accept':'application/json'}};
-let secs  = 0;
-
-const iv = setInterval(() => {{
-    secs += 3;
-    document.getElementById('elapsed').textContent = secs + 's o\'tdi';
-
-    fetch('/api/health', {{headers: H, cache: 'no-store'}})
-        .then(r => r.json())
-        .then(d => {{
-            if (d.status === 'ok') {{
-                clearInterval(iv);
-                document.getElementById('spin').style.borderTopColor = '#4ade80';
-                document.getElementById('spin').style.animation = 'none';
-                document.getElementById('st').innerHTML = '<span class="ok">✅ Server tayyor! Yo\'naltirilmoqda...</span>';
-                setTimeout(() => {{
-                    window.location.href = '/admin?key=' + KEY + '&msg=Deploy+muvaffaqiyatli!+✅&ok=1';
-                }}, 1200);
-            }}
-        }})
-        .catch(() => {{
-            document.getElementById('st').textContent =
-                'Server hali restart bo\\'layapti (' + secs + 's)...';
-        }});
-}}, 3000);
+var KEY='{k}', secs=0, done=false;
+function go(){{
+  if(done)return; done=true;
+  document.getElementById('sp').style.cssText='border-top-color:#4ade80;animation:none';
+  document.getElementById('st').innerHTML='<span class="ok">Server tayyor! Yonaltirilmoqda...</span>';
+  document.getElementById('btn').style.display='inline-block';
+  setTimeout(function(){{ window.location.href='{admin_url}'; }},1500);
+}}
+var iv=setInterval(function(){{
+  if(done)return;
+  secs+=3;
+  document.getElementById('el').textContent=secs+'s';
+  if(secs>=10) document.getElementById('btn').style.display='inline-block';
+  fetch('/api/ping',{{cache:'no-store',headers:{{'ngrok-skip-browser-warning':'1'}}}})
+    .then(function(r){{ if(r.ok) go(); }})
+    .catch(function(){{}});
+}},3000);
 </script>
 </body>
 </html>"""
@@ -612,9 +609,13 @@ async def admin_action(a: str = "", key: str = ""):
 
         if pull.returncode != 0:
             # Pull failed — don't restart, just show error
-            return redir(f"❌ git pull muvaffaqiyatsiz:\n{git_out}", success=False)
+            return redir(f"❌ git pull muvaffaqiyatsiz: {git_out}", success=False)
 
-        # Pull succeeded — schedule restart and return waiting page
+        # Already up to date — no restart needed
+        if "Already up to date" in git_out:
+            return redir("✅ Kod allaqachon yangi (Already up to date). Restart kerak emas.", success=True)
+
+        # New code pulled — schedule restart and show waiting page
         threading.Thread(target=lambda: (time.sleep(0.6), _os_mod._exit(0)), daemon=True).start()
         return HTMLResponse(
             _render_deploy_waiting(key, git_out),
