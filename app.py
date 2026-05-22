@@ -1549,9 +1549,24 @@ def build_ui() -> gr.Blocks:
                     # ── Juftlarni yarat ─────────────────────────────────────
                     pairs = _build_pairs()
                     if not pairs:
-                        msg = ("<div style='color:#f55;padding:8px'>⚠️ Assets papkasida "
-                               "rasm topilmadi. Assets/Woman/models va boshqalarni tekshiring."
-                               "</div>")
+                        # Diagnostika — nima bor nima yo'qligini ko'rsat
+                        assets_root = ROOT / "Assets"
+                        lines = [f"ROOT = {ROOT}", f"Assets exists: {assets_root.exists()}"]
+                        if assets_root.exists():
+                            for item in sorted(assets_root.rglob("*"))[:40]:
+                                lines.append(f"  {item.relative_to(ROOT)}")
+                        else:
+                            lines.append("Assets papkasi umuman yo'q!")
+                            lines.append("Mavjud papkalar:")
+                            for item in sorted(ROOT.iterdir()):
+                                lines.append(f"  {item.name}/  ({item.stat().st_size if item.is_file() else 'dir'})")
+                        diag = "\n".join(lines)
+                        # log ga ham yoz
+                        log_path.open("a", encoding="utf-8").write("\n--- DIAGNOSTIKA ---\n" + diag)
+                        msg = (f"<div style='color:#f55;padding:8px;background:#2a0a0a;"
+                               f"border-radius:8px'>⚠️ Assets papkasida rasm topilmadi.<br>"
+                               f"<pre style='font-size:0.75rem;color:#aaa;margin-top:6px;"
+                               f"white-space:pre-wrap'>{diag}</pre></div>")
                         new_state = {**state, "sid": new_sid}
                         return (new_state, "<div></div>", None, None, None,
                                 "<div></div>", [], "", "<div></div>", msg)
