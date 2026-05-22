@@ -286,13 +286,8 @@ async def api_tryon(
 
 
 # ── Admin panel ───────────────────────────────────────────────────────────
-_ADMIN_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lookzi Admin</title>
-<style>
+
+_ADMIN_CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
     background: #0a0a0a; color: #e0e0e0;
@@ -304,7 +299,7 @@ h1 {
     background: linear-gradient(135deg, #fff 0%, #a0a0ff 100%);
     -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
 }
-.sub { color: #333; font-size: 0.78rem; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 32px; }
+.sub { color: #555; font-size: 0.78rem; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 32px; }
 h2 { font-size: 0.72rem; color: #444; font-weight: 700; text-transform: uppercase;
      letter-spacing: 2px; margin: 28px 0 12px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
@@ -313,23 +308,23 @@ h2 { font-size: 0.72rem; color: #444; font-weight: 700; text-transform: uppercas
 .stat .val { font-size: 1.05rem; font-weight: 700; color: #fff; word-break: break-all; }
 .val.g { color: #4ade80; } .val.y { color: #facc15; } .val.r { color: #f87171; }
 .badge { display: inline-block; padding: 3px 11px; border-radius: 100px; font-size: 0.72rem; font-weight: 700; }
-.badge.ok { background: #052e16; color: #4ade80; border: 1px solid #14532d; }
+.badge.ok  { background: #052e16; color: #4ade80; border: 1px solid #14532d; }
 .badge.err { background: #2d0000; color: #f87171; border: 1px solid #7f1d1d; }
 .card { background: #0f0f0f; border: 1px solid #1e1e1e; border-radius: 14px; padding: 20px; }
 .btn { display: inline-block; padding: 11px 26px; border: none; border-radius: 10px;
-       font-size: 0.88rem; font-weight: 700; cursor: pointer;
+       font-size: 0.88rem; font-weight: 700; cursor: pointer; text-decoration: none;
        transition: opacity 0.15s, transform 0.1s; letter-spacing: 0.5px; }
 .btn:hover { opacity: 0.85; transform: translateY(-1px); }
-.btn:active { transform: translateY(0); }
 .btn-restart { background: linear-gradient(135deg, #dc2626, #b91c1c); color: #fff; }
 .btn-deploy  { background: linear-gradient(135deg, #16a34a, #15803d); color: #fff; }
 .btn-sleep   { background: linear-gradient(135deg, #d97706, #b45309); color: #fff; }
 .btn-wake    { background: linear-gradient(135deg, #0891b2, #0e7490); color: #fff; }
 .btn-sm { background: #1a1a1a; border: 1px solid #2a2a2a; color: #666;
-          padding: 6px 14px; font-size: 0.72rem; margin-left: 8px; }
-#deploy-out { display:none; margin-top:10px; padding:10px 14px;
-              background:#060606; border:1px solid #1a3a1a; border-radius:8px;
-              font-family:monospace; font-size:0.78rem; color:#4ade80; }
+          padding: 6px 14px; font-size: 0.72rem; }
+.msg-ok  { margin-bottom:20px; padding:12px 16px; background:#052e16;
+           border:1px solid #14532d; border-radius:10px; color:#4ade80; font-size:0.88rem; }
+.msg-err { margin-bottom:20px; padding:12px 16px; background:#2d0000;
+           border:1px solid #7f1d1d; border-radius:10px; color:#f87171; font-size:0.88rem; }
 #logs-box {
     background: #060606; border: 1px solid #1a1a1a; border-radius: 10px;
     padding: 16px; font-family: 'Cascadia Code', 'Consolas', monospace;
@@ -337,168 +332,205 @@ h2 { font-size: 0.72rem; color: #444; font-weight: 700; text-transform: uppercas
     max-height: 460px; overflow-y: auto;
     white-space: pre-wrap; word-break: break-all; margin-top: 10px;
 }
-.timer { color: #2a2a2a; font-size: 0.72rem; margin-left: 14px; vertical-align: middle; }
-#toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px;
-         border-radius: 10px; font-size: 0.85rem; display: none; z-index: 999; }
-</style>
+.timer-bar { color: #2a2a2a; font-size: 0.72rem; text-align: right; margin-bottom: 8px; }
+"""
+
+
+def _render_admin_page(key: str, msg: str = "", msg_ok: bool = True) -> str:
+    import html as _html
+
+    # ── gather status ──────────────────────────────────────────────────────
+    uptime_s = int(time.time() - SERVER_START_TIME)
+    uh = uptime_s // 3600
+    um = (uptime_s % 3600) // 60
+    us = uptime_s % 60
+    uptime_human = f"{uh}h {um}m {us}s"
+
+    model_loaded = _pipeline is not None
+    sleeping     = _sleeping
+
+    model_cls = "g" if model_loaded else "y"
+    model_txt = "Loaded ✓" if model_loaded else "Not loaded"
+    mode_cls  = "y" if sleeping else "g"
+    mode_txt  = "Sleep 💤" if sleeping else "Active ⚡"
+
+    gpu_cards = ""
+    if torch.cuda.is_available():
+        try:
+            props      = torch.cuda.get_device_properties(0)
+            vram_total = props.total_memory / 1024 ** 3
+            vram_free  = torch.cuda.mem_get_info(0)[0] / 1024 ** 3
+            vram_used  = vram_total - vram_free
+            pct        = vram_used / vram_total
+            gpu_name   = props.name.replace("NVIDIA GeForce ", "")
+            vc = "r" if pct > 0.88 else "g"
+            fc = "r" if vram_free < 1 else "g"
+            gpu_cards = (
+                f'<div class="stat"><div class="lbl">GPU</div>'
+                f'<div class="val">{_html.escape(gpu_name)}</div></div>'
+                f'<div class="stat"><div class="lbl">VRAM Used</div>'
+                f'<div class="val {vc}">{vram_used:.1f} GB</div></div>'
+                f'<div class="stat"><div class="lbl">VRAM Free</div>'
+                f'<div class="val {fc}">{vram_free:.1f} GB</div></div>'
+            )
+        except Exception:
+            gpu_cards = '<div class="stat"><div class="lbl">GPU</div><div class="val y">N/A</div></div>'
+
+    # ── action buttons ─────────────────────────────────────────────────────
+    k = _html.escape(key, quote=True)
+    sleep_btn = (
+        f'<a class="btn btn-sleep" href="/admin/action?a=sleep&key={k}" '
+        f'onclick="return confirm(\'Modelni GPU dan tushirish?\\nVRAM bo\\\'shaydi.\')">💤 Sleep</a>'
+        if (model_loaded and not sleeping) else ""
+    )
+    wake_btn = (
+        f'<a class="btn btn-wake" href="/admin/action?a=wake&key={k}">⚡ Wake</a>'
+        if sleeping else ""
+    )
+
+    # ── message banner ─────────────────────────────────────────────────────
+    msg_html = ""
+    if msg:
+        cls = "msg-ok" if msg_ok else "msg-err"
+        msg_html = f'<div class="{cls}">{_html.escape(msg)}</div>'
+
+    # ── logs ───────────────────────────────────────────────────────────────
+    logs_txt = "(No log file configured)"
+    if _log_file_path and Path(_log_file_path).exists():
+        try:
+            with open(_log_file_path, encoding="utf-8", errors="replace") as f:
+                logs_txt = "".join(f.readlines()[-80:])
+        except Exception as exc:
+            logs_txt = f"Error reading logs: {exc}"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="15;url=/admin?key={k}">
+<title>Lookzi Admin</title>
+<style>{_ADMIN_CSS}</style>
 </head>
 <body>
 <h1>Lookzi Admin</h1>
 <div class="sub">Server Management Panel</div>
 
+{msg_html}
+
+<div class="timer-bar" id="tmr">auto-refresh in 15s</div>
+
 <h2>System Status</h2>
 <div class="grid">
-  <div class="stat"><div class="lbl">Server</div><div class="val" id="s-status">...</div></div>
-  <div class="stat"><div class="lbl">Uptime</div><div class="val" id="s-uptime">...</div></div>
-  <div class="stat"><div class="lbl">Model</div><div class="val" id="s-model">...</div></div>
-  <div class="stat"><div class="lbl">Mode</div><div class="val" id="s-mode">...</div></div>
-  <div class="stat"><div class="lbl">GPU</div><div class="val" id="s-gpu">...</div></div>
-  <div class="stat"><div class="lbl">VRAM Used</div><div class="val" id="s-vram">...</div></div>
-  <div class="stat"><div class="lbl">VRAM Free</div><div class="val" id="s-vram-free">...</div></div>
+  <div class="stat"><div class="lbl">Server</div><div class="val"><span class="badge ok">ONLINE</span></div></div>
+  <div class="stat"><div class="lbl">Uptime</div><div class="val">{uptime_human}</div></div>
+  <div class="stat"><div class="lbl">Model</div><div class="val {model_cls}">{model_txt}</div></div>
+  <div class="stat"><div class="lbl">Mode</div><div class="val {mode_cls}">{mode_txt}</div></div>
+  {gpu_cards}
 </div>
 
 <h2>Actions</h2>
 <div class="card">
-  <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-    <button class="btn btn-deploy"  onclick="doDeploy()">&#x1F680; Deploy</button>
-    <button class="btn btn-restart" onclick="doRestart()">&#x1F504; Restart</button>
-    <button class="btn btn-sleep"   id="btn-sleep" onclick="doSleep()" style="display:none">&#x1F4A4; Sleep</button>
-    <button class="btn btn-wake"    id="btn-wake"  onclick="doWake()"  style="display:none">&#x26A1; Wake</button>
-    <button class="btn btn-sm"      onclick="refreshAll()">&#x21BB; Refresh</button>
-    <span class="timer" id="timer">auto-refresh in 15s</span>
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <a class="btn btn-deploy" href="/admin/action?a=deploy&key={k}"
+       onclick="return confirm('Deploy latest code?\\n\\ngit pull + server restart (~40s)')">🚀 Deploy</a>
+    <a class="btn btn-restart" href="/admin/action?a=restart&key={k}"
+       onclick="return confirm('Server restart?\\n~40 soniya offline bo\\'ladi.')">🔄 Restart</a>
+    {sleep_btn}
+    {wake_btn}
+    <a class="btn btn-sm" href="/admin?key={k}">↻ Refresh</a>
   </div>
-  <div id="deploy-out"></div>
 </div>
 
-<h2>Server Logs <button class="btn btn-sm" onclick="loadLogs()">&#x21BB;</button></h2>
-<div id="logs-box">Loading...</div>
+<h2>Server Logs</h2>
+<div id="logs-box">{_html.escape(logs_txt)}</div>
 
-<div id="toast"></div>
 <script>
-const KEY = new URLSearchParams(location.search).get('key') || '';
-const H   = {'ngrok-skip-browser-warning': '1', 'Content-Type': 'application/json'};
-
-function toast(msg, ok) {
-    const t = document.getElementById('toast');
-    t.textContent = msg;
-    t.style.background = ok ? '#052e16' : '#2d0000';
-    t.style.color = ok ? '#4ade80' : '#f87171';
-    t.style.border = '1px solid ' + (ok ? '#14532d' : '#7f1d1d');
-    t.style.display = 'block';
-    setTimeout(() => t.style.display = 'none', 3500);
-}
-
-async function fetchStatus() {
-    try {
-        const [h, s] = await Promise.all([
-            fetch('/api/health', {headers: H}).then(r => r.json()),
-            fetch('/admin/status?key=' + KEY, {headers: H}).then(r => r.json())
-        ]);
-        document.getElementById('s-status').innerHTML = '<span class="badge ok">ONLINE</span>';
-        document.getElementById('s-uptime').textContent = s.uptime_human || '-';
-        const ml = h.model_loaded;
-        const sl = h.sleeping;
-        document.getElementById('s-model').textContent = ml ? 'Loaded ✓' : 'Not loaded';
-        document.getElementById('s-model').className = 'val ' + (ml ? 'g' : 'y');
-        document.getElementById('s-mode').textContent  = sl ? 'Sleep 💤' : 'Active ⚡';
-        document.getElementById('s-mode').className    = 'val ' + (sl ? 'y' : 'g');
-        document.getElementById('btn-sleep').style.display = (!sl && ml) ? '' : 'none';
-        document.getElementById('btn-wake').style.display  = sl ? '' : 'none';
-        if (h.gpu) {
-            document.getElementById('s-gpu').textContent = h.gpu.name.replace('NVIDIA GeForce ', '');
-            const used = h.gpu.vram_total_gb - h.gpu.vram_free_gb;
-            const pct = used / h.gpu.vram_total_gb;
-            document.getElementById('s-vram').textContent = used.toFixed(1) + ' GB';
-            document.getElementById('s-vram').className = 'val ' + (pct > 0.88 ? 'r' : 'g');
-            document.getElementById('s-vram-free').textContent = h.gpu.vram_free_gb.toFixed(1) + ' GB';
-            document.getElementById('s-vram-free').className = 'val ' + (h.gpu.vram_free_gb < 1 ? 'r' : 'g');
-        }
-    } catch(e) {
-        document.getElementById('s-status').innerHTML = '<span class="badge err">OFFLINE</span>';
-        ['s-uptime','s-model','s-gpu','s-vram','s-vram-free'].forEach(id => {
-            document.getElementById(id).textContent = '-';
-        });
-    }
-}
-
-async function loadLogs() {
-    try {
-        const r = await fetch('/admin/logs?key=' + KEY, {headers: H});
-        if (!r.ok) { document.getElementById('logs-box').textContent = '[Access denied]'; return; }
-        const text = await r.text();
-        const box = document.getElementById('logs-box');
-        box.textContent = text || '(no logs yet)';
-        box.scrollTop = box.scrollHeight;
-    } catch(e) { document.getElementById('logs-box').textContent = 'Error: ' + e; }
-}
-
-async function doRestart() {
-    if (!confirm('Restart the Lookzi server?\\n\\nThis will interrupt active requests.\\nBack online in ~40 seconds.')) return;
-    try {
-        const r = await fetch('/admin/restart?key=' + KEY, {method:'POST', headers: H});
-        const d = await r.json();
-        toast(d.message || 'Restarting...', true);
-    } catch(e) { toast('Error: ' + e, false); }
-}
-
-async function doSleep() {
-    if (!confirm('Modelni GPU dan tushirish (sleep)?\n\nVRAM bo\'shaydi. Wake tugmasi bilan qayta yoqiladi (15s).')) return;
-    try {
-        const r = await fetch('/admin/sleep?key=' + KEY, {method:'POST', headers: H});
-        const d = await r.json();
-        toast(d.message || 'Sleeping...', true);
-        setTimeout(refreshAll, 1500);
-    } catch(e) { toast('Error: ' + e, false); }
-}
-
-async function doWake() {
-    toast('Model yuklanmoqda (~15s)...', true);
-    try {
-        const r = await fetch('/admin/wake?key=' + KEY, {method:'POST', headers: H});
-        const d = await r.json();
-        toast(d.message || 'Awake!', true);
-        setTimeout(refreshAll, 2000);
-    } catch(e) { toast('Error: ' + e, false); }
-}
-
-async function doDeploy() {
-    if (!confirm('Deploy latest code?\\n\\n1. git pull (GitHub dan yangi kod)\\n2. Server qayta ishga tushadi (~40s)')) return;
-    const out = document.getElementById('deploy-out');
-    out.style.display = 'block';
-    out.textContent = 'git pull bajarilmoqda...';
-    try {
-        const r = await fetch('/admin/deploy?key=' + KEY, {method:'POST', headers: H});
-        const d = await r.json();
-        out.textContent = d.message || 'Deploy started';
-        out.style.borderColor = d.status === 'ok' ? '#1a3a1a' : '#3a1a1a';
-        out.style.color = d.status === 'ok' ? '#4ade80' : '#f87171';
-        toast(d.status === 'ok' ? 'Deploying...' : (d.detail || 'Error'), d.status === 'ok');
-    } catch(e) {
-        out.textContent = 'Error: ' + e;
-        out.style.color = '#f87171';
-    }
-}
-
-function refreshAll() { fetchStatus(); loadLogs(); }
-
 let cd = 15;
-setInterval(() => {
-    cd--;
-    document.getElementById('timer').textContent = 'auto-refresh in ' + cd + 's';
-    if (cd <= 0) { cd = 15; refreshAll(); }
-}, 1000);
-
-refreshAll();
+setInterval(() => {{
+  cd--;
+  const t = document.getElementById('tmr');
+  if (t) t.textContent = 'auto-refresh in ' + cd + 's';
+}}, 1000);
+const lb = document.getElementById('logs-box');
+if (lb) lb.scrollTop = lb.scrollHeight;
 </script>
 </body>
 </html>"""
 
 
 @api.get("/admin")
-async def admin_page(key: str = ""):
+async def admin_page(key: str = "", msg: str = "", ok: int = 1):
     if key != ADMIN_KEY:
         raise HTTPException(403, "Access denied. Add ?key=YOUR_ADMIN_KEY to the URL.")
-    return HTMLResponse(_ADMIN_HTML)
+    html_content = _render_admin_page(key, msg=msg, msg_ok=bool(ok))
+    return HTMLResponse(
+        html_content,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            "ngrok-skip-browser-warning": "1",
+        },
+    )
+
+
+@api.get("/admin/action")
+async def admin_action(a: str = "", key: str = ""):
+    if key != ADMIN_KEY:
+        raise HTTPException(403, "Access denied")
+    from fastapi.responses import RedirectResponse
+    from urllib.parse import quote
+
+    def redir(message: str, success: bool = True) -> RedirectResponse:
+        return RedirectResponse(
+            f"/admin?key={key}&msg={quote(message)}&ok={1 if success else 0}",
+            status_code=303,
+        )
+
+    if a == "restart":
+        import threading
+        def _do_exit():
+            time.sleep(0.8)
+            _os_mod._exit(0)
+        threading.Thread(target=_do_exit, daemon=True).start()
+        return redir("Restarting… Back online in ~40 seconds.")
+
+    if a == "sleep":
+        if not _pipeline:
+            return redir("Model already unloaded.")
+        unload_pipeline()
+        return redir("Server sleeping 💤 — VRAM freed.")
+
+    if a == "wake":
+        if _pipeline:
+            return redir("Model already loaded ⚡")
+        import threading
+        threading.Thread(target=wake_pipeline, daemon=True).start()
+        return redir("Model loading… (~15s) ⚡")
+
+    if a == "deploy":
+        import subprocess, threading
+        def _do_deploy():
+            time.sleep(0.3)
+            try:
+                result = subprocess.run(
+                    ["git", "-c", "safe.directory=*", "pull", "--ff-only", "lookzi", "main"],
+                    cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+                    env={**_os_mod.environ, "GIT_TERMINAL_PROMPT": "0"},
+                )
+                out = (result.stdout + result.stderr).strip()
+                logger.info("Deploy git pull: %s", out)
+                if result.returncode == 0:
+                    time.sleep(1)
+                    _os_mod._exit(0)
+                else:
+                    logger.error("Deploy git pull failed (%d): %s", result.returncode, out)
+            except Exception as exc:
+                logger.error("Deploy error: %s", exc)
+        threading.Thread(target=_do_deploy, daemon=True).start()
+        return redir("Deploy started: git pull running. Server will restart in ~40s.")
+
+    raise HTTPException(400, f"Unknown action: {a}")
 
 
 @api.get("/admin/status")
@@ -574,7 +606,7 @@ async def admin_deploy(key: str = ""):
         try:
             logger.info("Deploy: running git pull...")
             result = subprocess.run(
-                ["git", "-c", "safe.directory=*", "pull", "--ff-only"],
+                ["git", "-c", "safe.directory=*", "pull", "--ff-only", "lookzi", "main"],
                 cwd=str(ROOT),
                 capture_output=True,
                 text=True,
