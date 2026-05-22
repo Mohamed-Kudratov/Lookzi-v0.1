@@ -234,6 +234,19 @@ api = FastAPI(
     description="Lookzi — AI-powered Virtual Try-On. Local, fast, private.",
 )
 
+# ── Test review router ────────────────────────────────────────────────────
+try:
+    from fastapi.staticfiles import StaticFiles
+    from test_review import router as _test_router
+    api.include_router(_test_router)
+    # Assets rasmlarini to'g'ridan-to'g'ri serve qilish (review UI uchun)
+    _assets_dir = ROOT / "Assets"
+    if _assets_dir.exists():
+        api.mount("/Assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+    logger.info("Test review UI: /tests?key=<admin_key>")
+except Exception as _e:
+    logger.warning("Test review yuklanmadi: %s", _e)
+
 
 @api.get("/api/health")
 def health():
