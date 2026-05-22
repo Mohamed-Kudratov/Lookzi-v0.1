@@ -896,6 +896,7 @@ div.meta-text,
 
 /* ── Test tab ── */
 .test-rating-row button { border-radius: 10px !important; font-weight: 700 !important; height: 46px !important; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
 """
 
 
@@ -1468,29 +1469,88 @@ def build_ui() -> gr.Blocks:
                     cur   = (tests[idx].get("rating") or "mid") if tests else "mid"
                     return _do_save(state, cur, issues, note, advance=True)
 
+                def _count_pairs():
+                    """How many test pairs does Assets/ have (for progress estimate)."""
+                    _amap = {
+                        "woman": {"models": "Assets/Woman/models",
+                                  "Upper": "Assets/Woman/Upper",
+                                  "Lower": "Assets/Woman/lower",
+                                  "Overall": "Assets/Woman/overall"},
+                        "man":   {"models": "Assets/man/models",
+                                  "Upper": "Assets/man/upper",
+                                  "Lower": "Assets/man/lower",
+                                  "Overall": "Assets/man/overall"},
+                    }
+                    _exts = {".jpg", ".jpeg", ".png", ".webp"}
+                    n = 0
+                    for _g, _paths in _amap.items():
+                        _mp = ROOT / _paths["models"]
+                        _mc = len([f for f in _mp.iterdir()
+                                   if f.suffix.lower() in _exts]) if _mp.exists() else 0
+                        for _cat in ("Upper", "Lower", "Overall"):
+                            _gp = ROOT / _paths[_cat]
+                            _gc = len([f for f in _gp.iterdir()
+                                       if f.suffix.lower() in _exts]) if _gp.exists() else 0
+                            n += min(_mc, _gc)
+                    return n
+
                 def _run_tests_bg(state):
                     import subprocess, sys as _sys
-                    new_sid = time.strftime("%Y%m%d_%H%M")
+                    new_sid = time.strftime("%Y%m%d_%H%M%S")
                     script  = ROOT / "scripts" / "run_tests.py"
+                    flt     = state.get("filter", "all")
+                    # Pre-create metadata.json so progress shows immediately
+                    n_pairs = _count_pairs()
+                    session_dir = test_dir / new_sid
+                    session_dir.mkdir(parents=True, exist_ok=True)
+                    init_meta = {
+                        "session_id": new_sid,
+                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "status": "running",
+                        "total": n_pairs, "ok": 0, "error": 0,
+                        "tests": [],
+                    }
+                    _save_meta(new_sid, init_meta)
                     if not script.exists():
-                        return ({**state, "sid": new_sid},
-                                "<div style='color:#f55'>scripts/run_tests.py topilmadi.</div>")
-                    try:
-                        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-                        subprocess.Popen(
-                            [_sys.executable, str(script),
-                             "--mode", "all", "--session", new_sid,
-                             "--host", "http://127.0.0.1:7860"],
-                            cwd=str(ROOT), creationflags=flags,
-                        )
-                        return (
-                            {**state, "sid": new_sid},
-                            f"<div style='color:#00c896;font-size:0.83rem'>"
-                            f"▶ Testlar boshlandi — session: <b>{new_sid}</b><br>"
-                            f"Tugagach <b>🔄 Refresh</b> bosing.</div>",
-                        )
-                    except Exception as exc:
-                        return ({**state}, f"<div style='color:#f55'>Error: {exc}</div>")
+                        msg = "<div style='color:#f55'>scripts/run_tests.py topilmadi.</div>"
+                    else:
+                        try:
+                            flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                            subprocess.Popen(
+                                [_sys.executable, str(script),
+                                 "--mode", "all", "--session", new_sid,
+                                 "--host", "http://127.0.0.1:7860"],
+                                cwd=str(ROOT), creationflags=flags,
+                            )
+                            msg = (
+                                f"<div style='background:#0a2a1a;border:1px solid #00c896;"
+                                f"border-radius:8px;padding:10px 14px;font-size:0.83rem'>"
+                                f"<div style='color:#00c896;font-weight:700;font-size:1rem'>"
+                                f"⏳ Testlar ishlamoqda...</div>"
+                                f"<div style='color:#aaa;margin-top:4px'>"
+                                f"Session: <code>{new_sid}</code> &nbsp;·&nbsp; "
+                                f"Jami: <b>{n_pairs}</b> test<br>"
+                                f"Progress har 3 soniyada avtomatik yangilanadi.</div></div>"
+                            )
+                        except Exception as exc:
+                            msg = f"<div style='color:#f55'>Subprocess xatosi: {exc}</div>"
+                    new_state = {"sid": new_sid, "tests": [], "idx": 0, "filter": flt}
+                    prog = (
+                        f"<div style='font-family:system-ui;font-size:0.85rem;"
+                        f"color:#ccc;margin:8px 0'>"
+                        f"<div style='display:flex;gap:24px;margin-bottom:6px'>"
+                        f"<span>📊 <b>{n_pairs}</b> test</span>"
+                        f"<span style=\"color:#f5a623\">⏳ ishlamoqda...</span>"
+                        f"</div>"
+                        f"<div style='background:#222;border-radius:6px;height:8px'>"
+                        f"<div style='background:linear-gradient(90deg,#f5a623,#ff6b00);"
+                        f"height:100%;width:5%;animation:pulse 1.5s infinite'></div>"
+                        f"</div></div>"
+                    )
+                    return (new_state, prog,
+                            None, None, None, "<div></div>", [], "",
+                            "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
+                            msg)
 
                 def _auto_rate(state):
                     """Heuristic auto-rating using PIL ImageStat (no extra deps)."""
@@ -1547,6 +1607,9 @@ def build_ui() -> gr.Blocks:
                         _stats_html(meta),
                     )
 
+                # ── Auto-refresh timer (every 3 s) ────────────────────────────
+                t_timer = gr.Timer(value=3, active=False)
+
                 # ── Wire outputs ─────────────────────────────────────────────
                 _sess_outs = [t_state, t_progress, t_person, t_garment, t_result,
                               t_info, t_issues, t_note, t_stats, t_msg]
@@ -1555,10 +1618,28 @@ def build_ui() -> gr.Blocks:
                 _save_outs = [t_state, t_msg, t_person, t_garment, t_result,
                               t_info, t_issues, t_note, t_progress]
 
+                def _timer_tick(state):
+                    """Auto-refresh; deactivates timer when all tests done."""
+                    sid   = state.get("sid")
+                    if not sid:
+                        return _do_refresh(state) + (False,)
+                    meta  = _load_meta(sid) or {}
+                    tests = meta.get("tests", [])
+                    done  = bool(tests) and all(
+                        t.get("status") in ("ok", "error") for t in tests
+                    )
+                    return _do_refresh(state) + (not done,)   # timer stays on while not done
+
                 t_run.click(fn=_run_tests_bg,
-                             inputs=[t_state], outputs=[t_state, t_msg])
+                             inputs=[t_state], outputs=_sess_outs)
+                # Activate timer right after Run Tests fires
+                t_run.click(fn=lambda: gr.Timer(active=True),
+                             outputs=[t_timer])
+
                 t_refresh.click(fn=_do_refresh,
                                  inputs=[t_state], outputs=_sess_outs)
+                t_timer.tick(fn=_timer_tick,
+                              inputs=[t_state], outputs=_sess_outs + [t_timer])
                 t_autorank.click(fn=_auto_rate,
                                   inputs=[t_state], outputs=[t_state, t_msg, t_stats])
 
