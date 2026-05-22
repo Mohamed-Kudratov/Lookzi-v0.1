@@ -1162,23 +1162,14 @@ def build_ui() -> gr.Blocks:
                 t_state = gr.State({"sid": None, "tests": [], "idx": 0, "filter": "all"})
 
                 # ── Toolbar ──────────────────────────────────────────────────
-                _default_sid = time.strftime("%Y%m%d_%H%M")
-                _existing    = _get_sessions()
                 with gr.Row():
-                    t_session = gr.Dropdown(
-                        label="Session  (mavjudni tanlang yoki yangi nom yozing)",
-                        choices=_existing,
-                        value=_existing[0] if _existing else _default_sid,
-                        allow_custom_value=True,
-                        interactive=True, scale=5,
-                    )
-                    t_refresh  = gr.Button("🔄 Refresh",    scale=1, size="sm")
-                    t_run      = gr.Button("▶ Run Tests",   variant="primary",   scale=2, size="sm")
-                    t_autorank = gr.Button("🤖 Auto-Rate",  variant="secondary", scale=2, size="sm")
+                    t_run      = gr.Button("▶  Run Tests",  variant="primary",   scale=3, size="lg")
+                    t_refresh  = gr.Button("🔄  Refresh",   variant="secondary", scale=2, size="lg")
+                    t_autorank = gr.Button("🤖  Auto-Rate", variant="secondary", scale=2, size="lg")
 
                 t_progress = gr.HTML(
                     "<div style='color:#555;font-size:0.83rem;padding:6px 0'>"
-                    "Session tanlang yoki yangi nom yozib <b>▶ Run Tests</b> bosing.</div>"
+                    "<b>▶ Run Tests</b> bosing — testlar avtomatik boshlanadi.</div>"
                 )
 
                 # ── Filter ───────────────────────────────────────────────────
@@ -1241,6 +1232,16 @@ def build_ui() -> gr.Blocks:
                 with gr.Accordion("📊  Statistics", open=False):
                     t_stats = gr.HTML(
                         "<div style='color:#666;padding:8px'>Load a session to see stats.</div>"
+                    )
+
+                # ── Previous sessions (hidden by default) ─────────────────────
+                with gr.Accordion("🗂  Previous sessions", open=False):
+                    _existing = _get_sessions()
+                    t_hist = gr.Dropdown(
+                        label="Switch to session",
+                        choices=_existing,
+                        value=None,
+                        interactive=True,
                     )
 
                 # ── Keyboard shortcuts (JS injection) ────────────────────────
@@ -1328,35 +1329,29 @@ def build_ui() -> gr.Blocks:
 
                 # ──────────────────── Event handlers ─────────────────────────
 
-                def _refresh_sessions():
-                    return gr.Dropdown(choices=_get_sessions())
-
-                def _on_session(sid, state):
-                    sid = (sid or "").strip()
+                def _load_sid(sid, state):
+                    """Load a session by ID into state and return all UI outputs."""
                     flt = state.get("filter", "all")
+                    sid = (sid or "").strip()
+                    _empty_ui = (state,
+                                 "<div style='color:#555;font-size:0.83rem;padding:6px 0'>"
+                                 "<b>▶ Run Tests</b> bosing — testlar avtomatik boshlanadi.</div>",
+                                 None, None, None, "<div></div>", [], "",
+                                 "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
+                                 "<div></div>")
                     if not sid:
-                        return (state,
-                                "<div style='color:#555;font-size:0.83rem'>Session nomi kiriting.</div>",
-                                None, None, None, "<div></div>", [], "",
-                                "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
-                                "<div></div>")
+                        return _empty_ui
                     meta = _load_meta(sid)
                     if not meta:
-                        return ({"sid": sid, "tests": [], "idx": 0, "filter": flt},
-                                f"<div style='color:#7cf;font-size:0.83rem'>"
-                                f"Yangi session: <b>{sid}</b> — <b>▶ Run Tests</b> bosing.</div>",
-                                None, None, None, "<div></div>", [], "",
-                                "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
-                                "<div></div>")
+                        return _empty_ui
                     tests = meta.get("tests", [])
                     if not tests:
-                        return ({"sid": sid, "tests": [], "idx": 0, "filter": flt},
-                                "<div style='color:#f5a623'>Session bo'sh — testlar yo'q.</div>",
+                        return ({**state, "sid": sid, "tests": [], "idx": 0},
+                                "<div style='color:#f5a623'>Testlar hali tugallanmagan...</div>",
                                 None, None, None, "<div></div>", [], "",
                                 "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
                                 "<div></div>")
-                    # start at first item matching current filter
-                    fi = _filtered_idx_list(tests, flt)
+                    fi    = _filtered_idx_list(tests, flt)
                     start = fi[0] if fi else 0
                     new_state = {"sid": sid, "tests": tests, "idx": start, "filter": flt}
                     t = tests[start]
@@ -1370,6 +1365,20 @@ def build_ui() -> gr.Blocks:
                             t.get("note", ""),
                             _stats_html(meta),
                             "<div></div>")
+
+                def _do_refresh(state):
+                    """Reload current session (or most recent) from disk."""
+                    sid = state.get("sid")
+                    if not sid:
+                        sessions = _get_sessions()
+                        if not sessions:
+                            return (state,
+                                    "<div style='color:#555'>Hali hech qanday test yo'q.</div>",
+                                    None, None, None, "<div></div>", [], "",
+                                    "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
+                                    "<div></div>")
+                        sid = sessions[0]
+                    return _load_sid(sid, state)
 
                 def _on_filter(flt, state):
                     """Filter changed — jump to first matching test."""
@@ -1459,58 +1468,53 @@ def build_ui() -> gr.Blocks:
                     cur   = (tests[idx].get("rating") or "mid") if tests else "mid"
                     return _do_save(state, cur, issues, note, advance=True)
 
-                def _run_tests_bg(sid):
+                def _run_tests_bg(state):
                     import subprocess, sys as _sys
-                    sid = (sid or "").strip() or time.strftime("%Y%m%d_%H%M")
-                    script = ROOT / "scripts" / "run_tests.py"
+                    new_sid = time.strftime("%Y%m%d_%H%M")
+                    script  = ROOT / "scripts" / "run_tests.py"
                     if not script.exists():
-                        return (gr.Dropdown(choices=_get_sessions(), value=sid),
+                        return ({**state, "sid": new_sid},
                                 "<div style='color:#f55'>scripts/run_tests.py topilmadi.</div>")
                     try:
                         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
                         subprocess.Popen(
                             [_sys.executable, str(script),
-                             "--mode", "all", "--session", sid,
+                             "--mode", "all", "--session", new_sid,
                              "--host", "http://127.0.0.1:7860"],
                             cwd=str(ROOT), creationflags=flags,
                         )
                         return (
-                            gr.Dropdown(choices=_get_sessions(), value=sid),
+                            {**state, "sid": new_sid},
                             f"<div style='color:#00c896;font-size:0.83rem'>"
-                            f"▶ Test runner boshlandi — session: <b>{sid}</b><br>"
-                            f"Tugagach <b>🔄 Refresh</b> bosing va sessiyani tanlang.</div>",
+                            f"▶ Testlar boshlandi — session: <b>{new_sid}</b><br>"
+                            f"Tugagach <b>🔄 Refresh</b> bosing.</div>",
                         )
                     except Exception as exc:
-                        return (gr.Dropdown(choices=_get_sessions(), value=sid),
-                                f"<div style='color:#f55'>Error: {exc}</div>")
+                        return ({**state}, f"<div style='color:#f55'>Error: {exc}</div>")
 
-                def _auto_rate(sid, state):
+                def _auto_rate(state):
                     """Heuristic auto-rating using PIL ImageStat (no extra deps)."""
                     from PIL import ImageStat as _IStat
-                    sid = (sid or "").strip()
+                    sid = state.get("sid")
                     if not sid:
-                        return (state, "<div style='color:#f55'>Session tanlang.</div>",
+                        return (state,
+                                "<div style='color:#f55'>Avval <b>▶ Run Tests</b> → <b>🔄 Refresh</b>.</div>",
                                 "<div></div>")
                     meta = _load_meta(sid)
                     if not meta:
-                        return (state, "<div style='color:#f55'>Metadata topilmadi.</div>",
+                        return (state,
+                                "<div style='color:#f55'>Metadata topilmadi — 🔄 Refresh bosing.</div>",
                                 "<div></div>")
                     tests = meta.get("tests", [])
                     for t in tests:
-                        # Already manually rated → skip
-                        if t.get("rating"):
+                        if t.get("rating"):          # manually rated → skip
                             continue
                         if t.get("status") != "ok":
                             t["rating"] = "bad"
-                            if "artifact" not in t.get("issues", []):
-                                t.setdefault("issues", [])
                             continue
-                        rp = t.get("result_path")
-                        if not rp:
-                            t["rating"] = "bad"
-                            continue
-                        path = ROOT / rp
-                        if not path.exists():
+                        rp   = t.get("result_path")
+                        path = ROOT / rp if rp else None
+                        if not path or not path.exists():
                             t["rating"] = "bad"
                             continue
                         try:
@@ -1518,12 +1522,7 @@ def build_ui() -> gr.Blocks:
                             stat = _IStat.Stat(img)
                             mean = sum(stat.mean)   / 3
                             std  = sum(stat.stddev) / 3
-                            if mean < 12 or mean > 243:
-                                t["rating"] = "bad"
-                                t.setdefault("issues", [])
-                                if "artifact" not in t["issues"]:
-                                    t["issues"].append("artifact")
-                            elif std < 10:
+                            if mean < 12 or mean > 243 or std < 10:
                                 t["rating"] = "bad"
                                 t.setdefault("issues", [])
                                 if "artifact" not in t["issues"]:
@@ -1538,30 +1537,37 @@ def build_ui() -> gr.Blocks:
                     good = sum(1 for t in tests if t.get("rating") == "good")
                     mid  = sum(1 for t in tests if t.get("rating") == "mid")
                     bad  = sum(1 for t in tests if t.get("rating") == "bad")
-                    new_state = {**state, "sid": sid, "tests": tests}
+                    new_state = {**state, "tests": tests}
                     return (
                         new_state,
                         f"<div style='color:#00c896;font-size:0.83rem'>"
                         f"🤖 Auto-rated {len(tests)} test — "
                         f"✅ {good} &nbsp; ⚠️ {mid} &nbsp; ❌ {bad}<br>"
-                        f"<span style='color:#888'>Noto'g'rilarini <b>mid</b> filter bilan tekshiring.</span></div>",
+                        f"<span style='color:#aaa'>Shubhalilarni <b>mid</b> filter bilan tekshiring.</span></div>",
                         _stats_html(meta),
                     )
 
-                # wire outputs lists
-                _sess_outs  = [t_state, t_progress, t_person, t_garment, t_result,
-                               t_info, t_issues, t_note, t_stats, t_msg]
-                _nav_outs   = [t_state, t_person, t_garment, t_result,
-                               t_info, t_issues, t_note]
-                _save_outs  = [t_state, t_msg, t_person, t_garment, t_result,
-                               t_info, t_issues, t_note, t_progress]
+                # ── Wire outputs ─────────────────────────────────────────────
+                _sess_outs = [t_state, t_progress, t_person, t_garment, t_result,
+                              t_info, t_issues, t_note, t_stats, t_msg]
+                _nav_outs  = [t_state, t_person, t_garment, t_result,
+                              t_info, t_issues, t_note]
+                _save_outs = [t_state, t_msg, t_person, t_garment, t_result,
+                              t_info, t_issues, t_note, t_progress]
 
-                t_refresh.click(fn=_refresh_sessions, outputs=[t_session])
-                t_session.change(fn=_on_session,
-                                  inputs=[t_session, t_state], outputs=_sess_outs)
+                t_run.click(fn=_run_tests_bg,
+                             inputs=[t_state], outputs=[t_state, t_msg])
+                t_refresh.click(fn=_do_refresh,
+                                 inputs=[t_state], outputs=_sess_outs)
+                t_autorank.click(fn=_auto_rate,
+                                  inputs=[t_state], outputs=[t_state, t_msg, t_stats])
+
+                # History dropdown (inside accordion)
+                t_hist.change(fn=lambda sid, st: _load_sid(sid, st),
+                               inputs=[t_hist, t_state], outputs=_sess_outs)
+
                 t_filter.change(fn=_on_filter,
                                  inputs=[t_filter, t_state], outputs=_nav_outs)
-
                 t_prev.click(fn=lambda s: _navigate(s, -1),
                               inputs=[t_state], outputs=_nav_outs)
                 t_next.click(fn=lambda s: _navigate(s,  1),
@@ -1572,21 +1578,17 @@ def build_ui() -> gr.Blocks:
                     inputs=[t_state, t_issues, t_note], outputs=_save_outs,
                 )
                 t_mid.click(
-                    fn=lambda s, iss, n: _do_save(s, "mid", iss, n, advance=True),
+                    fn=lambda s, iss, n: _do_save(s, "mid",  iss, n, advance=True),
                     inputs=[t_state, t_issues, t_note], outputs=_save_outs,
                 )
                 t_bad.click(
-                    fn=lambda s, iss, n: _do_save(s, "bad", iss, n, advance=True),
+                    fn=lambda s, iss, n: _do_save(s, "bad",  iss, n, advance=True),
                     inputs=[t_state, t_issues, t_note], outputs=_save_outs,
                 )
                 t_save.click(fn=_save_keep,
                               inputs=[t_state, t_issues, t_note], outputs=_save_outs)
                 t_save_next.click(fn=_save_next,
                                    inputs=[t_state, t_issues, t_note], outputs=_save_outs)
-
-                t_run.click(fn=_run_tests_bg, inputs=[t_session], outputs=[t_session, t_msg])
-                t_autorank.click(fn=_auto_rate, inputs=[t_session, t_state],
-                                  outputs=[t_state, t_msg, t_stats])
 
     demo.css = CSS
     return demo
