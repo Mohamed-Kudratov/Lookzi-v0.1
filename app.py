@@ -1502,106 +1502,147 @@ def build_ui() -> gr.Blocks:
                             n += min(_mc, _gc)
                     return n
 
+                def _build_pairs():
+                    """Assets papkasidan test juftlarini yaratish."""
+                    _amap = {
+                        "woman": {"models": "Assets/Woman/models",
+                                  "Upper":  "Assets/Woman/Upper",
+                                  "Lower":  "Assets/Woman/lower",
+                                  "Overall":"Assets/Woman/overall"},
+                        "man":   {"models": "Assets/man/models",
+                                  "Upper":  "Assets/man/upper",
+                                  "Lower":  "Assets/man/lower",
+                                  "Overall":"Assets/man/overall"},
+                    }
+                    _exts = {".jpg", ".jpeg", ".png", ".webp"}
+                    pairs = []
+                    for gender, paths in _amap.items():
+                        mp = ROOT / paths["models"]
+                        models = sorted(f for f in mp.iterdir()
+                                        if f.suffix.lower() in _exts) if mp.exists() else []
+                        for cat in ("Upper", "Lower", "Overall"):
+                            gp = ROOT / paths[cat]
+                            garments = sorted(f for f in gp.iterdir()
+                                              if f.suffix.lower() in _exts) if gp.exists() else []
+                            for i, (m, g) in enumerate(zip(models, garments)):
+                                pairs.append({
+                                    "id":           f"{gender}_{cat.lower()}_{i:04d}",
+                                    "gender":       gender,
+                                    "category":     cat,
+                                    "person_path":  str(m.relative_to(ROOT)),
+                                    "garment_path": str(g.relative_to(ROOT)),
+                                    "result_path":  None,
+                                    "status":       "pending",
+                                    "error":        None,
+                                    "elapsed_s":    None,
+                                    "rating":       None,
+                                    "issues":       [],
+                                    "note":         "",
+                                })
+                    return pairs
+
                 def _run_tests_bg(state):
-                    import subprocess, sys as _sys
-                    import requests as _req
+                    import threading, requests as _req
 
                     flt     = state.get("filter", "all")
                     new_sid = time.strftime("%Y%m%d_%H%M%S")
-                    script  = ROOT / "scripts" / "run_tests.py"
-                    n_pairs = _count_pairs()
+                    host    = "http://127.0.0.1:7860"
 
-                    # ── 1. Health check first ───────────────────────────────
-                    host = "http://127.0.0.1:7860"
-                    try:
-                        r    = _req.get(f"{host}/api/health", timeout=4)
-                        info = r.json()
-                    except Exception as e:
-                        msg = (f"<div style='color:#f55;padding:8px;background:#2a0a0a;"
-                               f"border-radius:8px'>❌ Server javob bermadi: {e}<br>"
-                               f"Server ishlamoqdami?</div>")
-                        return ({**state}, state.get("sid") and
-                                _progress_html(_load_meta(state["sid"]) or {}) or
-                                "<div></div>",
-                                None, None, None, "<div></div>", [], "",
-                                "<div></div>", msg)
+                    # ── Juftlarni yarat ─────────────────────────────────────
+                    pairs = _build_pairs()
+                    if not pairs:
+                        msg = ("<div style='color:#f55;padding:8px'>⚠️ Assets papkasida "
+                               "rasm topilmadi. Assets/Woman/models va boshqalarni tekshiring."
+                               "</div>")
+                        new_state = {**state, "sid": new_sid}
+                        return (new_state, "<div></div>", None, None, None,
+                                "<div></div>", [], "", "<div></div>", msg)
 
-                    if not info.get("model_loaded"):
-                        msg = (f"<div style='color:#f5a623;padding:8px;background:#2a1a00;"
-                               f"border-radius:8px'>⚠️ Model uyquda!<br>"
-                               f"Admin paneldan <b>Wake</b> tugmasini bosing, "
-                               f"keyin qaytadan urinib ko'ring.</div>")
-                        return ({**state}, state.get("sid") and
-                                _progress_html(_load_meta(state["sid"]) or {}) or
-                                "<div></div>",
-                                None, None, None, "<div></div>", [], "",
-                                "<div></div>", msg)
-
-                    # ── 2. Pre-create metadata so progress shows instantly ──
+                    # ── Session papka + metadata + log ──────────────────────
                     session_dir = test_dir / new_sid
                     session_dir.mkdir(parents=True, exist_ok=True)
-                    _save_meta(new_sid, {
+
+                    meta = {
                         "session_id": new_sid,
                         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                        "status": "running",
-                        "total": n_pairs, "ok": 0, "error": 0,
-                        "tests": [],
-                    })
+                        "total": len(pairs), "ok": 0, "error": 0,
+                        "tests": pairs,
+                    }
+                    _save_meta(new_sid, meta)
 
-                    # ── 3. Launch subprocess, log to runner.log ─────────────
                     log_path = session_dir / "runner.log"
-                    # Write header BEFORE Popen so log always exists
                     log_path.write_text(
-                        f"=== Lookzi Test Runner ===\n"
-                        f"Session  : {new_sid}\n"
-                        f"Script   : {script}\n"
-                        f"Python   : {_sys.executable}\n"
-                        f"Started  : {time.ctime()}\n"
+                        f"=== Lookzi Test Runner (thread) ===\n"
+                        f"Session : {new_sid}\n"
+                        f"Pairs   : {len(pairs)}\n"
+                        f"Started : {time.ctime()}\n"
                         f"{'='*40}\n",
                         encoding="utf-8",
                     )
-                    if not script.exists():
-                        log_path.open("a").write("ERROR: scripts/run_tests.py topilmadi!\n")
-                        msg = "<div style='color:#f55'>scripts/run_tests.py topilmadi.</div>"
-                    else:
-                        try:
-                            log_f = open(log_path, "a", encoding="utf-8")
-                            CREATE_NO_WINDOW = 0x08000000
-                            subprocess.Popen(
-                                [_sys.executable, str(script),
-                                 "--mode", "all", "--session", new_sid,
-                                 "--host", host],
-                                cwd=str(ROOT),
-                                stdout=log_f, stderr=log_f,
-                                stdin=subprocess.DEVNULL,
-                                creationflags=CREATE_NO_WINDOW,
-                            )
-                            msg = (
-                                f"<div style='background:#0a2a1a;border:1px solid #00c896;"
-                                f"border-radius:8px;padding:10px 14px;font-size:0.83rem'>"
-                                f"<div style='color:#00c896;font-weight:700;font-size:1rem'>"
-                                f"⏳ Testlar ishlamoqda...</div>"
-                                f"<div style='color:#aaa;margin-top:4px'>"
-                                f"Session: <code style='color:#7cf'>{new_sid}</code>"
-                                f" &nbsp;·&nbsp; Jami: <b>{n_pairs}</b> test<br>"
-                                f"📋 Runner Log accordionini oching — har 3s yangilanadi."
-                                f"</div></div>"
-                            )
-                        except Exception as exc:
-                            import traceback as _tb
-                            err_detail = _tb.format_exc()
-                            log_path.open("a", encoding="utf-8").write(
-                                f"\nPopen xatosi: {exc}\n{err_detail}\n"
-                            )
-                            msg = (f"<div style='color:#f55;padding:8px;background:#2a0a0a;"
-                                   f"border-radius:8px'>❌ Subprocess xatosi: <code>{exc}</code>"
-                                   f"<br>📋 Runner Log ni oching</div>")
+
+                    # ── Background thread — subprocess yo'q ────────────────
+                    def _worker():
+                        def wlog(s):
+                            with open(log_path, "a", encoding="utf-8") as lf:
+                                lf.write(s + "\n")
+
+                        ok_n = err_n = 0
+                        for i, pair in enumerate(pairs):
+                            person_f  = ROOT / pair["person_path"]
+                            garment_f = ROOT / pair["garment_path"]
+                            res_name  = f"{pair['id']}.png"
+                            res_path  = session_dir / res_name
+                            wlog(f"[{i+1}/{len(pairs)}] {pair['id']}")
+                            try:
+                                with open(person_f, "rb") as pf, \
+                                     open(garment_f, "rb") as gf:
+                                    t0   = time.time()
+                                    resp = _req.post(
+                                        f"{host}/api/tryon",
+                                        files={
+                                            "person_image":  ("p.jpg", pf, "image/jpeg"),
+                                            "garment_image": ("g.jpg", gf, "image/jpeg"),
+                                        },
+                                        data={"category": pair["category"],
+                                              "garment_photo_type": "model",
+                                              "return_base64": "false"},
+                                        timeout=180,
+                                    )
+                                    elapsed = round(time.time() - t0, 1)
+                                if resp.status_code == 200:
+                                    res_path.write_bytes(resp.content)
+                                    pair["status"]      = "ok"
+                                    pair["elapsed_s"]   = elapsed
+                                    pair["result_path"] = f"test_results/{new_sid}/{res_name}"
+                                    ok_n += 1
+                                    wlog(f"  ✅ {elapsed}s")
+                                else:
+                                    pair["status"] = "error"
+                                    pair["error"]  = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                                    err_n += 1
+                                    wlog(f"  ❌ HTTP {resp.status_code}")
+                            except Exception as exc:
+                                pair["status"] = "error"
+                                pair["error"]  = str(exc)
+                                err_n += 1
+                                wlog(f"  ❌ {exc}")
+
+                            # metadata.json ni har testdan keyin yangilash
+                            cur = _load_meta(new_sid) or meta
+                            cur["tests"][i] = pair
+                            cur["ok"]    = ok_n
+                            cur["error"] = err_n
+                            _save_meta(new_sid, cur)
+
+                        wlog(f"\n✅ {ok_n}  ❌ {err_n}  / {len(pairs)} — DONE")
+
+                    threading.Thread(target=_worker, daemon=True).start()
 
                     prog = (
                         f"<div style='font-family:system-ui;font-size:0.85rem;"
                         f"color:#ccc;margin:8px 0'>"
                         f"<div style='display:flex;gap:24px;margin-bottom:6px'>"
-                        f"<span>📊 <b>{n_pairs}</b> test</span>"
+                        f"<span>📊 <b>{len(pairs)}</b> test</span>"
                         f"<span style='color:#f5a623'>⏳ ishlamoqda...</span>"
                         f"</div>"
                         f"<div style='background:#222;border-radius:6px;height:8px'>"
@@ -1609,7 +1650,16 @@ def build_ui() -> gr.Blocks:
                         f"height:100%;width:5%;animation:pulse 1.5s infinite'></div>"
                         f"</div></div>"
                     )
-                    new_state = {"sid": new_sid, "tests": [], "idx": 0, "filter": flt}
+                    msg = (
+                        f"<div style='background:#0a2a1a;border:1px solid #00c896;"
+                        f"border-radius:8px;padding:10px 14px;font-size:0.83rem'>"
+                        f"<div style='color:#00c896;font-weight:700'>⏳ Testlar ishlamoqda...</div>"
+                        f"<div style='color:#aaa;margin-top:4px'>"
+                        f"Session: <code style='color:#7cf'>{new_sid}</code>"
+                        f" · Jami: <b>{len(pairs)}</b> test<br>"
+                        f"Progress har 3s yangilanadi.</div></div>"
+                    )
+                    new_state = {"sid": new_sid, "tests": pairs, "idx": 0, "filter": flt}
                     return (new_state, prog,
                             None, None, None, "<div></div>", [], "",
                             "<div style='color:#666;padding:8px'>Testlar boshlanmoqda...</div>",
