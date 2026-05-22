@@ -1549,12 +1549,24 @@ def build_ui() -> gr.Blocks:
                     })
 
                     # ── 3. Launch subprocess, log to runner.log ─────────────
+                    log_path = session_dir / "runner.log"
+                    # Write header BEFORE Popen so log always exists
+                    log_path.write_text(
+                        f"=== Lookzi Test Runner ===\n"
+                        f"Session  : {new_sid}\n"
+                        f"Script   : {script}\n"
+                        f"Python   : {_sys.executable}\n"
+                        f"Started  : {time.ctime()}\n"
+                        f"{'='*40}\n",
+                        encoding="utf-8",
+                    )
                     if not script.exists():
+                        log_path.open("a").write("ERROR: scripts/run_tests.py topilmadi!\n")
                         msg = "<div style='color:#f55'>scripts/run_tests.py topilmadi.</div>"
                     else:
-                        log_path = session_dir / "runner.log"
                         try:
-                            log_f = open(log_path, "w", encoding="utf-8", buffering=1)
+                            log_f = open(log_path, "a", encoding="utf-8")
+                            CREATE_NO_WINDOW = 0x08000000
                             subprocess.Popen(
                                 [_sys.executable, str(script),
                                  "--mode", "all", "--session", new_sid,
@@ -1562,6 +1574,7 @@ def build_ui() -> gr.Blocks:
                                 cwd=str(ROOT),
                                 stdout=log_f, stderr=log_f,
                                 stdin=subprocess.DEVNULL,
+                                creationflags=CREATE_NO_WINDOW,
                             )
                             msg = (
                                 f"<div style='background:#0a2a1a;border:1px solid #00c896;"
@@ -1571,13 +1584,18 @@ def build_ui() -> gr.Blocks:
                                 f"<div style='color:#aaa;margin-top:4px'>"
                                 f"Session: <code style='color:#7cf'>{new_sid}</code>"
                                 f" &nbsp;·&nbsp; Jami: <b>{n_pairs}</b> test<br>"
-                                f"Progress avtomatik yangilanadi. "
-                                f"Log: <code>test_results/{new_sid}/runner.log</code>"
+                                f"📋 Runner Log accordionini oching — har 3s yangilanadi."
                                 f"</div></div>"
                             )
                         except Exception as exc:
-                            msg = (f"<div style='color:#f55;padding:8px'>"
-                                   f"Subprocess xatosi: <code>{exc}</code></div>")
+                            import traceback as _tb
+                            err_detail = _tb.format_exc()
+                            log_path.open("a", encoding="utf-8").write(
+                                f"\nPopen xatosi: {exc}\n{err_detail}\n"
+                            )
+                            msg = (f"<div style='color:#f55;padding:8px;background:#2a0a0a;"
+                                   f"border-radius:8px'>❌ Subprocess xatosi: <code>{exc}</code>"
+                                   f"<br>📋 Runner Log ni oching</div>")
 
                     prog = (
                         f"<div style='font-family:system-ui;font-size:0.85rem;"
@@ -1658,15 +1676,18 @@ def build_ui() -> gr.Blocks:
                 def _read_log(state):
                     sid = state.get("sid")
                     if not sid:
-                        return "Hali session yo'q."
+                        return "Hali session yo'q — Run Tests bosing."
                     log_path = test_dir / sid / "runner.log"
                     if not log_path.exists():
-                        return (f"runner.log topilmadi: {log_path}\n\n"
-                                f"Bu subprocess umuman ishlamadi degani.\n"
-                                f"sys.executable = {sys.executable}")
+                        return (
+                            f"runner.log topilmadi: {log_path}\n\n"
+                            f"Eski kod ishlayapti — Deploy bosing!\n"
+                            f"sys.executable = {sys.executable}\n"
+                            f"ROOT = {ROOT}"
+                        )
                     try:
                         txt = log_path.read_text(encoding="utf-8", errors="replace")
-                        return (txt[-6000:] if len(txt) > 6000 else txt) or "(log bo'sh)"
+                        return (txt[-8000:] if len(txt) > 8000 else txt) or "(log bo'sh)"
                     except Exception as e:
                         return f"Log o'qishda xato: {e}"
 
