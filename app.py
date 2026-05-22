@@ -1162,17 +1162,23 @@ def build_ui() -> gr.Blocks:
                 t_state = gr.State({"sid": None, "tests": [], "idx": 0})
 
                 # ── Toolbar ──────────────────────────────────────────────────
+                _default_sid = time.strftime("%Y%m%d_%H%M")
+                _existing    = _get_sessions()
                 with gr.Row():
                     t_session = gr.Dropdown(
-                        label="Session", choices=_get_sessions(),
-                        interactive=True, scale=5,
+                        label="Session  (mavjudni tanlang yoki yangi nom yozing)",
+                        choices=_existing,
+                        value=_existing[0] if _existing else _default_sid,
+                        allow_custom_value=True,
+                        interactive=True,
+                        scale=5,
                     )
                     t_refresh = gr.Button("🔄 Refresh", scale=1, size="sm")
                     t_run     = gr.Button("▶ Run Tests", variant="primary", scale=2, size="sm")
 
                 t_progress = gr.HTML(
                     "<div style='color:#555;font-size:0.83rem;padding:6px 0'>"
-                    "← Select a session to start reviewing.</div>"
+                    "Session tanlang yoki yangi nom yozib <b>▶ Run Tests</b> bosing.</div>"
                 )
 
                 # ── 3-panel image display ────────────────────────────────────
@@ -1233,20 +1239,32 @@ def build_ui() -> gr.Blocks:
                     return gr.Dropdown(choices=_get_sessions())
 
                 def _on_session(sid, state):
-                    empty = (state, "<div style='color:#666'>No session selected.</div>",
-                             None, None, None, "<div></div>", [], "", "<div></div>", "<div></div>")
+                    sid = (sid or "").strip()
+                    blank = (state,
+                             "<div style='color:#555;font-size:0.83rem'>"
+                             "Session nomi kiriting va <b>▶ Run Tests</b> bosing.</div>",
+                             None, None, None, "<div></div>", [], "",
+                             "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
+                             "<div></div>")
                     if not sid:
-                        return empty
+                        return blank
                     meta = _load_meta(sid)
                     if not meta:
-                        return (state,
-                                "<div style='color:#f55'>metadata.json not found.</div>",
-                                None, None, None, "<div></div>", [], "", "<div></div>", "<div></div>")
+                        # New session — not run yet, just show a hint
+                        return ({"sid": sid, "tests": [], "idx": 0},
+                                f"<div style='color:#7cf;font-size:0.83rem'>"
+                                f"Yangi session: <b>{sid}</b> — "
+                                f"<b>▶ Run Tests</b> bosib testlarni boshlang.</div>",
+                                None, None, None, "<div></div>", [], "",
+                                "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
+                                "<div></div>")
                     tests = meta.get("tests", [])
                     if not tests:
                         return ({"sid": sid, "tests": [], "idx": 0},
-                                "<div style='color:#f55'>No tests in session.</div>",
-                                None, None, None, "<div></div>", [], "", "<div></div>", "<div></div>")
+                                "<div style='color:#f5a623'>Session bo'sh — testlar yo'q.</div>",
+                                None, None, None, "<div></div>", [], "",
+                                "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
+                                "<div></div>")
                     new_state = {"sid": sid, "tests": tests, "idx": 0}
                     t = tests[0]
                     return (new_state,
@@ -1326,11 +1344,11 @@ def build_ui() -> gr.Blocks:
 
                 def _run_tests_bg(sid):
                     import subprocess, sys as _sys
-                    if not sid:
-                        return "<div style='color:#f55'>Session tanlang.</div>"
+                    sid = (sid or "").strip() or time.strftime("%Y%m%d_%H%M")
                     script = ROOT / "scripts" / "run_tests.py"
                     if not script.exists():
-                        return "<div style='color:#f55'>scripts/run_tests.py topilmadi.</div>"
+                        return (gr.Dropdown(choices=_get_sessions(), value=sid),
+                                "<div style='color:#f55'>scripts/run_tests.py topilmadi.</div>")
                     try:
                         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
                         subprocess.Popen(
@@ -1340,11 +1358,15 @@ def build_ui() -> gr.Blocks:
                             cwd=str(ROOT),
                             creationflags=flags,
                         )
-                        return (f"<div style='color:#00c896'>▶ Test runner boshlandi — "
-                                f"session: <b>{sid}</b><br>"
-                                f"Tugagach 🔄 Refresh bosib sessiyani tanlang.</div>")
+                        return (
+                            gr.Dropdown(choices=_get_sessions(), value=sid),
+                            f"<div style='color:#00c896;font-size:0.83rem'>"
+                            f"▶ Test runner boshlandi — session: <b>{sid}</b><br>"
+                            f"Tugagach <b>🔄 Refresh</b> bosing va sessiyani tanlang.</div>",
+                        )
                     except Exception as exc:
-                        return f"<div style='color:#f55'>Error: {exc}</div>"
+                        return (gr.Dropdown(choices=_get_sessions(), value=sid),
+                                f"<div style='color:#f55'>Error: {exc}</div>")
 
                 # wire outputs lists
                 _sess_outs  = [t_state, t_progress, t_person, t_garment, t_result,
@@ -1380,7 +1402,7 @@ def build_ui() -> gr.Blocks:
                 t_save_next.click(fn=_save_next,
                                    inputs=[t_state, t_issues, t_note], outputs=_save_outs)
 
-                t_run.click(fn=_run_tests_bg, inputs=[t_session], outputs=[t_msg])
+                t_run.click(fn=_run_tests_bg, inputs=[t_session], outputs=[t_session, t_msg])
 
     demo.css = CSS
     return demo
