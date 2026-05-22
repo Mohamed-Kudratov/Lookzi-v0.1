@@ -317,6 +317,46 @@ async def api_tryon(
     return StreamingResponse(buf, media_type="image/png", headers={"X-Lookzi-Info": msg})
 
 
+# ── Assets upload ─────────────────────────────────────────────────────────
+
+@api.post("/admin/upload-assets")
+async def upload_assets(
+    key:  str        = Form(...),
+    file: UploadFile = File(...),
+):
+    import zipfile, io as _io
+    from fastapi.responses import RedirectResponse
+    from urllib.parse import quote as _quote
+
+    def _redir(msg: str, ok: bool = True) -> RedirectResponse:
+        return RedirectResponse(
+            f"/admin?key={key}&msg={_quote(msg)}&ok={1 if ok else 0}",
+            status_code=303,
+        )
+
+    if key != ADMIN_KEY:
+        return _redir("❌ Noto'g'ri admin kalit", ok=False)
+    if not file.filename.lower().endswith(".zip"):
+        return _redir("❌ Faqat .zip fayl qabul qilinadi", ok=False)
+
+    data = await file.read()
+    try:
+        with zipfile.ZipFile(_io.BytesIO(data)) as zf:
+            # Xavfsizlik: path traversal oldini olish
+            for name in zf.namelist():
+                if ".." in name or name.startswith("/"):
+                    return _redir(f"❌ Xavfli fayl nomi: {name}", ok=False)
+            zf.extractall(str(ROOT))
+        # Nechta rasm chiqqanini hisobla
+        n = sum(1 for p in (ROOT / "Assets").rglob("*")
+                if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"})
+        return _redir(f"✅ Assets yuklandi! {n} ta rasm topildi.")
+    except zipfile.BadZipFile:
+        return _redir("❌ Noto'g'ri zip fayl", ok=False)
+    except Exception as e:
+        return _redir(f"❌ Xato: {e}", ok=False)
+
+
 # ── Admin panel ───────────────────────────────────────────────────────────
 
 def _render_deploy_waiting(key: str, git_out: str) -> str:
@@ -538,6 +578,25 @@ def _render_admin_page(key: str, msg: str = "", msg_ok: bool = True) -> str:
     {wake_btn}
     <a class="btn btn-sm" href="/admin?key={k}">↻ Refresh</a>
   </div>
+</div>
+
+<h2>Assets Upload</h2>
+<div class="card">
+  <p style="margin:0 0 10px;color:#aaa;font-size:13px;">
+    Assets papkasini zip qilib yuklang. Arxiv ichida <code>Assets/</code> papkasi bo'lishi kerak.<br>
+    Misol: <code>Assets/Woman/models/01.jpg</code>, <code>Assets/man/upper/02.png</code> ...
+  </p>
+  <form action="/admin/upload-assets" method="post" enctype="multipart/form-data"
+        onsubmit="this.querySelector('.btn-upload').textContent='⏳ Yuklanmoqda...';this.querySelector('.btn-upload').disabled=true;">
+    <input type="hidden" name="key" value="{k}">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <input type="file" name="file" accept=".zip" required
+             style="background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;
+                    padding:6px 10px;border-radius:6px;font-size:13px;cursor:pointer;">
+      <button type="submit" class="btn btn-deploy btn-upload"
+              style="text-decoration:none;">📦 Upload Assets.zip</button>
+    </div>
+  </form>
 </div>
 
 <h2>Server Logs</h2>
