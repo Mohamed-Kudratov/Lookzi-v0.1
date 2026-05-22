@@ -1158,8 +1158,8 @@ def build_ui() -> gr.Blocks:
             # ════════════════════════ TAB 2 — Tests ══════════════════════════
             with gr.Tab("🧪  Tests"):
 
-                # State: {sid, tests, idx}
-                t_state = gr.State({"sid": None, "tests": [], "idx": 0})
+                # State: {sid, tests, idx, filter}
+                t_state = gr.State({"sid": None, "tests": [], "idx": 0, "filter": "all"})
 
                 # ── Toolbar ──────────────────────────────────────────────────
                 _default_sid = time.strftime("%Y%m%d_%H%M")
@@ -1170,44 +1170,55 @@ def build_ui() -> gr.Blocks:
                         choices=_existing,
                         value=_existing[0] if _existing else _default_sid,
                         allow_custom_value=True,
-                        interactive=True,
-                        scale=5,
+                        interactive=True, scale=5,
                     )
-                    t_refresh = gr.Button("🔄 Refresh", scale=1, size="sm")
-                    t_run     = gr.Button("▶ Run Tests", variant="primary", scale=2, size="sm")
+                    t_refresh  = gr.Button("🔄 Refresh",    scale=1, size="sm")
+                    t_run      = gr.Button("▶ Run Tests",   variant="primary",   scale=2, size="sm")
+                    t_autorank = gr.Button("🤖 Auto-Rate",  variant="secondary", scale=2, size="sm")
 
                 t_progress = gr.HTML(
                     "<div style='color:#555;font-size:0.83rem;padding:6px 0'>"
                     "Session tanlang yoki yangi nom yozib <b>▶ Run Tests</b> bosing.</div>"
                 )
 
+                # ── Filter ───────────────────────────────────────────────────
+                t_filter = gr.Radio(
+                    choices=["all", "unrated", "good", "mid", "bad", "error"],
+                    value="all", label="Filter", container=False,
+                )
+
                 # ── 3-panel image display ────────────────────────────────────
                 with gr.Row(equal_height=True):
                     with gr.Column():
                         gr.HTML('<div class="section-label">Person</div>')
-                        t_person = gr.Image(label="", type="pil", height=400,
-                                            show_label=False, interactive=False)
+                        t_person  = gr.Image(label="", type="pil", height=400,
+                                             show_label=False, interactive=False)
                     with gr.Column():
                         gr.HTML('<div class="section-label">Garment</div>')
                         t_garment = gr.Image(label="", type="pil", height=400,
                                              show_label=False, interactive=False)
                     with gr.Column():
                         gr.HTML('<div class="section-label">Result</div>')
-                        t_result = gr.Image(label="", type="pil", height=400,
-                                            show_label=False, interactive=False)
+                        t_result  = gr.Image(label="", type="pil", height=400,
+                                             show_label=False, interactive=False)
 
                 # ── Info bar + navigation ────────────────────────────────────
                 t_info = gr.HTML("<div></div>")
                 with gr.Row():
-                    t_prev = gr.Button("◀  Prev", scale=1, size="sm")
-                    t_next = gr.Button("Next  ▶", scale=1, size="sm")
+                    t_prev = gr.Button("◀  Prev", scale=1, size="sm", elem_id="t-prev-btn")
+                    t_next = gr.Button("Next  ▶", scale=1, size="sm", elem_id="t-next-btn")
 
                 # ── Rating buttons ───────────────────────────────────────────
-                gr.HTML('<div class="section-label" style="padding-top:4px">Rate this result</div>')
+                gr.HTML(
+                    '<div class="section-label" style="padding-top:4px">'
+                    'Rate this result &nbsp;<span style="color:#444;font-weight:400;'
+                    'text-transform:none;letter-spacing:0;font-size:0.72rem">'
+                    '(keyboard: ← → navigate &nbsp;|&nbsp; 1 Good &nbsp; 2 Mid &nbsp; 3 Bad)</span></div>'
+                )
                 with gr.Row(elem_classes="test-rating-row"):
-                    t_good = gr.Button("✅  Good",  variant="primary",   scale=1)
-                    t_mid  = gr.Button("⚠️  Mid",   variant="secondary", scale=1)
-                    t_bad  = gr.Button("❌  Bad",   variant="stop",      scale=1)
+                    t_good = gr.Button("✅  Good [1]", variant="primary",   scale=1, elem_id="t-good-btn")
+                    t_mid  = gr.Button("⚠️  Mid  [2]", variant="secondary", scale=1, elem_id="t-mid-btn")
+                    t_bad  = gr.Button("❌  Bad  [3]", variant="stop",      scale=1, elem_id="t-bad-btn")
 
                 # ── Issues + note ────────────────────────────────────────────
                 t_issues = gr.CheckboxGroup(
@@ -1219,7 +1230,6 @@ def build_ui() -> gr.Blocks:
                     label="Note", placeholder="Optional comment...",
                     lines=2, max_lines=4,
                 )
-
                 with gr.Row():
                     t_save      = gr.Button("💾  Save",           scale=2, size="sm")
                     t_save_next = gr.Button("💾  Save & Next  ▶", variant="primary",
@@ -1233,6 +1243,89 @@ def build_ui() -> gr.Blocks:
                         "<div style='color:#666;padding:8px'>Load a session to see stats.</div>"
                     )
 
+                # ── Keyboard shortcuts (JS injection) ────────────────────────
+                gr.HTML("""
+                <script>
+                (function() {
+                  function bindKeys() {
+                    if (document.getElementById('t-prev-btn')) {
+                      document.addEventListener('keydown', function(e) {
+                        var tag = (e.target||{}).tagName;
+                        if (tag==='INPUT'||tag==='TEXTAREA') return;
+                        var map = {
+                          'ArrowLeft':  't-prev-btn',
+                          'ArrowRight': 't-next-btn',
+                          '1': 't-good-btn',
+                          '2': 't-mid-btn',
+                          '3': 't-bad-btn'
+                        };
+                        var id = map[e.key];
+                        if (id) {
+                          var btn = document.querySelector('#'+id+' button');
+                          if (btn) { btn.click(); e.preventDefault(); }
+                        }
+                      });
+                      return;
+                    }
+                    setTimeout(bindKeys, 500);
+                  }
+                  bindKeys();
+                })();
+                </script>
+                """)
+
+                # ──────────────────── Helpers ─────────────────────────────────
+
+                def _filtered_idx_list(tests, flt):
+                    """Return list of abs indices matching the filter."""
+                    if flt == "all":
+                        return list(range(len(tests)))
+                    if flt == "unrated":
+                        return [i for i, t in enumerate(tests) if not t.get("rating")]
+                    if flt == "error":
+                        return [i for i, t in enumerate(tests) if t.get("status") == "error"]
+                    return [i for i, t in enumerate(tests) if t.get("rating") == flt]
+
+                def _resolve_idx(tests, flt, abs_idx, direction=0):
+                    """Move abs_idx by direction within filtered list."""
+                    fi = _filtered_idx_list(tests, flt)
+                    if not fi:
+                        return abs_idx  # no items in filter, stay
+                    # find position in filtered list
+                    pos = fi.index(abs_idx) if abs_idx in fi else 0
+                    new_pos = (pos + direction) % len(fi)
+                    return fi[new_pos]
+
+                def _info_html_with_filter(test, abs_idx, tests, flt):
+                    fi = _filtered_idx_list(tests, flt)
+                    pos = (fi.index(abs_idx) + 1) if abs_idx in fi else "?"
+                    total_f = len(fi)
+                    icons = {"good": "✅", "mid": "⚠️", "bad": "❌"}
+                    rating_icon = icons.get(test.get("rating", ""), "—")
+                    status_color = "#00c896" if test.get("status") == "ok" else "#ff4444"
+                    elapsed = f"{test.get('elapsed_s')}s" if test.get("elapsed_s") else "—"
+                    issues  = ", ".join(test.get("issues", [])) or "—"
+                    err_txt = (f'<div style="margin-top:4px;color:#f88;font-size:0.78rem">{test["error"]}</div>'
+                               if test.get("error") else "")
+                    iss_txt = (f'<div style="margin-top:4px;color:#f5a623;font-size:0.78rem">Issues: {issues}</div>'
+                               if issues != "—" else "")
+                    filter_badge = (f' &nbsp;<span style="background:#333;border-radius:4px;'
+                                    f'padding:1px 6px;font-size:0.72rem">{flt}</span>'
+                                    if flt != "all" else "")
+                    return (
+                        f'<div style="font-family:system-ui;font-size:0.82rem;color:#aaa;'
+                        f'padding:8px 12px;background:#1a1a1a;border-radius:8px;border:1px solid #333">'
+                        f'<div style="display:flex;gap:20px;flex-wrap:wrap">'
+                        f'<span><b style="color:#fff">{pos} / {total_f}</b>{filter_badge}</span>'
+                        f'<span>ID: <code style="color:#7cf">{test["id"]}</code></span>'
+                        f'<span>Gender: <b>{test["gender"]}</b></span>'
+                        f'<span>Cat: <b>{test["category"]}</b></span>'
+                        f'<span style="color:{status_color}">● {test["status"]}</span>'
+                        f'<span>⏱ {elapsed}</span>'
+                        f'<span>Rating: <b>{rating_icon}</b></span>'
+                        f'</div>{err_txt}{iss_txt}</div>'
+                    )
+
                 # ──────────────────── Event handlers ─────────────────────────
 
                 def _refresh_sessions():
@@ -1240,61 +1333,81 @@ def build_ui() -> gr.Blocks:
 
                 def _on_session(sid, state):
                     sid = (sid or "").strip()
-                    blank = (state,
-                             "<div style='color:#555;font-size:0.83rem'>"
-                             "Session nomi kiriting va <b>▶ Run Tests</b> bosing.</div>",
-                             None, None, None, "<div></div>", [], "",
-                             "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
-                             "<div></div>")
+                    flt = state.get("filter", "all")
                     if not sid:
-                        return blank
+                        return (state,
+                                "<div style='color:#555;font-size:0.83rem'>Session nomi kiriting.</div>",
+                                None, None, None, "<div></div>", [], "",
+                                "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
+                                "<div></div>")
                     meta = _load_meta(sid)
                     if not meta:
-                        # New session — not run yet, just show a hint
-                        return ({"sid": sid, "tests": [], "idx": 0},
+                        return ({"sid": sid, "tests": [], "idx": 0, "filter": flt},
                                 f"<div style='color:#7cf;font-size:0.83rem'>"
-                                f"Yangi session: <b>{sid}</b> — "
-                                f"<b>▶ Run Tests</b> bosib testlarni boshlang.</div>",
+                                f"Yangi session: <b>{sid}</b> — <b>▶ Run Tests</b> bosing.</div>",
                                 None, None, None, "<div></div>", [], "",
                                 "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
                                 "<div></div>")
                     tests = meta.get("tests", [])
                     if not tests:
-                        return ({"sid": sid, "tests": [], "idx": 0},
+                        return ({"sid": sid, "tests": [], "idx": 0, "filter": flt},
                                 "<div style='color:#f5a623'>Session bo'sh — testlar yo'q.</div>",
                                 None, None, None, "<div></div>", [], "",
                                 "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
                                 "<div></div>")
-                    new_state = {"sid": sid, "tests": tests, "idx": 0}
-                    t = tests[0]
+                    # start at first item matching current filter
+                    fi = _filtered_idx_list(tests, flt)
+                    start = fi[0] if fi else 0
+                    new_state = {"sid": sid, "tests": tests, "idx": start, "filter": flt}
+                    t = tests[start]
                     return (new_state,
                             _progress_html(meta),
                             _test_img(sid, t, "person"),
                             _test_img(sid, t, "garment"),
                             _test_img(sid, t, "result"),
-                            _test_info_html(t, 0, len(tests)),
+                            _info_html_with_filter(t, start, tests, flt),
                             t.get("issues", []),
                             t.get("note", ""),
                             _stats_html(meta),
                             "<div></div>")
 
-                def _navigate(state, direction: int):
+                def _on_filter(flt, state):
+                    """Filter changed — jump to first matching test."""
                     sid   = state.get("sid")
                     tests = state.get("tests", [])
-                    idx   = state.get("idx", 0)
-                    if not tests or not sid:
-                        return state, None, None, None, "<div></div>", [], ""
-                    idx = (idx + direction) % len(tests)
-                    # re-read from disk to pick up any saved ratings
-                    meta = _load_meta(sid) or {}
+                    if not sid or not tests:
+                        return {**state, "filter": flt}, None, None, None, "<div></div>", [], ""
+                    meta  = _load_meta(sid) or {}
                     fresh = meta.get("tests", tests)
-                    new_state = {"sid": sid, "tests": fresh, "idx": idx}
-                    t = fresh[idx] if idx < len(fresh) else tests[idx]
+                    fi    = _filtered_idx_list(fresh, flt)
+                    idx   = fi[0] if fi else 0
+                    new_state = {"sid": sid, "tests": fresh, "idx": idx, "filter": flt}
+                    t = fresh[idx]
                     return (new_state,
                             _test_img(sid, t, "person"),
                             _test_img(sid, t, "garment"),
                             _test_img(sid, t, "result"),
-                            _test_info_html(t, idx, len(fresh)),
+                            _info_html_with_filter(t, idx, fresh, flt),
+                            t.get("issues", []),
+                            t.get("note", ""))
+
+                def _navigate(state, direction: int):
+                    sid   = state.get("sid")
+                    tests = state.get("tests", [])
+                    idx   = state.get("idx", 0)
+                    flt   = state.get("filter", "all")
+                    if not tests or not sid:
+                        return state, None, None, None, "<div></div>", [], ""
+                    meta  = _load_meta(sid) or {}
+                    fresh = meta.get("tests", tests)
+                    new_idx   = _resolve_idx(fresh, flt, idx, direction)
+                    new_state = {"sid": sid, "tests": fresh, "idx": new_idx, "filter": flt}
+                    t = fresh[new_idx]
+                    return (new_state,
+                            _test_img(sid, t, "person"),
+                            _test_img(sid, t, "garment"),
+                            _test_img(sid, t, "result"),
+                            _info_html_with_filter(t, new_idx, fresh, flt),
                             t.get("issues", []),
                             t.get("note", ""))
 
@@ -1302,22 +1415,26 @@ def build_ui() -> gr.Blocks:
                     sid   = state.get("sid")
                     tests = state.get("tests", [])
                     idx   = state.get("idx", 0)
+                    flt   = state.get("filter", "all")
                     if not sid or not tests:
                         return (state,
-                                "<div style='color:#f55'>No session loaded.</div>",
+                                "<div style='color:#f55'>Session yuklanmagan.</div>",
                                 None, None, None, "<div></div>", [], "", "<div></div>")
                     meta = _load_meta(sid)
                     if not meta:
                         return (state,
-                                "<div style='color:#f55'>Metadata error.</div>",
+                                "<div style='color:#f55'>Metadata xatosi.</div>",
                                 None, None, None, "<div></div>", [], "", "<div></div>")
                     meta["tests"][idx]["rating"] = rating_val
                     meta["tests"][idx]["issues"] = issues
                     meta["tests"][idx]["note"]   = note
                     _save_meta(sid, meta)
                     fresh = meta["tests"]
-                    new_idx = (idx + 1) % len(fresh) if advance else idx
-                    new_state = {"sid": sid, "tests": fresh, "idx": new_idx}
+                    if advance:
+                        new_idx = _resolve_idx(fresh, flt, idx, +1)
+                    else:
+                        new_idx = idx
+                    new_state = {"sid": sid, "tests": fresh, "idx": new_idx, "filter": flt}
                     t = fresh[new_idx]
                     icon = {"good": "✅", "mid": "⚠️", "bad": "❌"}.get(rating_val, "💾")
                     return (new_state,
@@ -1325,7 +1442,7 @@ def build_ui() -> gr.Blocks:
                             _test_img(sid, t, "person"),
                             _test_img(sid, t, "garment"),
                             _test_img(sid, t, "result"),
-                            _test_info_html(t, new_idx, len(fresh)),
+                            _info_html_with_filter(t, new_idx, fresh, flt),
                             t.get("issues", []),
                             t.get("note", ""),
                             _progress_html(meta))
@@ -1333,14 +1450,14 @@ def build_ui() -> gr.Blocks:
                 def _save_keep(state, issues, note):
                     tests = state.get("tests", [])
                     idx   = state.get("idx", 0)
-                    cur_rating = (tests[idx].get("rating") or "mid") if tests else "mid"
-                    return _do_save(state, cur_rating, issues, note, advance=False)
+                    cur   = (tests[idx].get("rating") or "mid") if tests else "mid"
+                    return _do_save(state, cur, issues, note, advance=False)
 
                 def _save_next(state, issues, note):
                     tests = state.get("tests", [])
                     idx   = state.get("idx", 0)
-                    cur_rating = (tests[idx].get("rating") or "mid") if tests else "mid"
-                    return _do_save(state, cur_rating, issues, note, advance=True)
+                    cur   = (tests[idx].get("rating") or "mid") if tests else "mid"
+                    return _do_save(state, cur, issues, note, advance=True)
 
                 def _run_tests_bg(sid):
                     import subprocess, sys as _sys
@@ -1355,8 +1472,7 @@ def build_ui() -> gr.Blocks:
                             [_sys.executable, str(script),
                              "--mode", "all", "--session", sid,
                              "--host", "http://127.0.0.1:7860"],
-                            cwd=str(ROOT),
-                            creationflags=flags,
+                            cwd=str(ROOT), creationflags=flags,
                         )
                         return (
                             gr.Dropdown(choices=_get_sessions(), value=sid),
@@ -1367,6 +1483,70 @@ def build_ui() -> gr.Blocks:
                     except Exception as exc:
                         return (gr.Dropdown(choices=_get_sessions(), value=sid),
                                 f"<div style='color:#f55'>Error: {exc}</div>")
+
+                def _auto_rate(sid, state):
+                    """Heuristic auto-rating using PIL ImageStat (no extra deps)."""
+                    from PIL import ImageStat as _IStat
+                    sid = (sid or "").strip()
+                    if not sid:
+                        return (state, "<div style='color:#f55'>Session tanlang.</div>",
+                                "<div></div>")
+                    meta = _load_meta(sid)
+                    if not meta:
+                        return (state, "<div style='color:#f55'>Metadata topilmadi.</div>",
+                                "<div></div>")
+                    tests = meta.get("tests", [])
+                    for t in tests:
+                        # Already manually rated → skip
+                        if t.get("rating"):
+                            continue
+                        if t.get("status") != "ok":
+                            t["rating"] = "bad"
+                            if "artifact" not in t.get("issues", []):
+                                t.setdefault("issues", [])
+                            continue
+                        rp = t.get("result_path")
+                        if not rp:
+                            t["rating"] = "bad"
+                            continue
+                        path = ROOT / rp
+                        if not path.exists():
+                            t["rating"] = "bad"
+                            continue
+                        try:
+                            img  = _PilImage.open(path).convert("RGB")
+                            stat = _IStat.Stat(img)
+                            mean = sum(stat.mean)   / 3
+                            std  = sum(stat.stddev) / 3
+                            if mean < 12 or mean > 243:
+                                t["rating"] = "bad"
+                                t.setdefault("issues", [])
+                                if "artifact" not in t["issues"]:
+                                    t["issues"].append("artifact")
+                            elif std < 10:
+                                t["rating"] = "bad"
+                                t.setdefault("issues", [])
+                                if "artifact" not in t["issues"]:
+                                    t["issues"].append("artifact")
+                            elif std >= 30 and 20 < mean < 230:
+                                t["rating"] = "good"
+                            else:
+                                t["rating"] = "mid"
+                        except Exception:
+                            t["rating"] = "mid"
+                    _save_meta(sid, meta)
+                    good = sum(1 for t in tests if t.get("rating") == "good")
+                    mid  = sum(1 for t in tests if t.get("rating") == "mid")
+                    bad  = sum(1 for t in tests if t.get("rating") == "bad")
+                    new_state = {**state, "sid": sid, "tests": tests}
+                    return (
+                        new_state,
+                        f"<div style='color:#00c896;font-size:0.83rem'>"
+                        f"🤖 Auto-rated {len(tests)} test — "
+                        f"✅ {good} &nbsp; ⚠️ {mid} &nbsp; ❌ {bad}<br>"
+                        f"<span style='color:#888'>Noto'g'rilarini <b>mid</b> filter bilan tekshiring.</span></div>",
+                        _stats_html(meta),
+                    )
 
                 # wire outputs lists
                 _sess_outs  = [t_state, t_progress, t_person, t_garment, t_result,
@@ -1379,6 +1559,8 @@ def build_ui() -> gr.Blocks:
                 t_refresh.click(fn=_refresh_sessions, outputs=[t_session])
                 t_session.change(fn=_on_session,
                                   inputs=[t_session, t_state], outputs=_sess_outs)
+                t_filter.change(fn=_on_filter,
+                                 inputs=[t_filter, t_state], outputs=_nav_outs)
 
                 t_prev.click(fn=lambda s: _navigate(s, -1),
                               inputs=[t_state], outputs=_nav_outs)
@@ -1403,6 +1585,8 @@ def build_ui() -> gr.Blocks:
                                    inputs=[t_state, t_issues, t_note], outputs=_save_outs)
 
                 t_run.click(fn=_run_tests_bg, inputs=[t_session], outputs=[t_session, t_msg])
+                t_autorank.click(fn=_auto_rate, inputs=[t_session, t_state],
+                                  outputs=[t_state, t_msg, t_stats])
 
     demo.css = CSS
     return demo
