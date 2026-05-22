@@ -300,6 +300,80 @@ async def api_tryon(
 
 # ── Admin panel ───────────────────────────────────────────────────────────
 
+def _render_deploy_waiting(key: str, git_out: str) -> str:
+    import html as _html
+    k   = _html.escape(key, quote=True)
+    out = _html.escape(git_out)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deploying...</title>
+<style>
+* {{ box-sizing:border-box; margin:0; padding:0; }}
+body {{ background:#0a0a0a; color:#e0e0e0;
+       font-family:'Inter','Segoe UI',sans-serif;
+       display:flex; flex-direction:column; align-items:center;
+       justify-content:center; min-height:100vh; padding:32px 24px; text-align:center; }}
+h1 {{ font-size:2rem; font-weight:800; margin-bottom:8px; }}
+.sub {{ color:#555; font-size:0.8rem; letter-spacing:2px; text-transform:uppercase; margin-bottom:32px; }}
+.spinner {{ width:52px; height:52px; border:4px solid #1e1e1e;
+            border-top-color:#4ade80; border-radius:50%;
+            animation:spin 0.9s linear infinite; margin:0 auto 28px; }}
+@keyframes spin {{ to {{ transform:rotate(360deg); }} }}
+.git-box {{ background:#060606; border:1px solid #14532d; border-radius:10px;
+            padding:16px 20px; font-family:'Consolas',monospace; font-size:0.78rem;
+            color:#4ade80; max-width:640px; width:100%; text-align:left;
+            white-space:pre-wrap; word-break:break-all; margin-bottom:24px; }}
+.status {{ color:#555; font-size:0.88rem; margin-bottom:8px; }}
+.dot {{ display:inline-block; animation:blink 1.2s infinite; }}
+@keyframes blink {{ 0%,100%{{opacity:1}} 50%{{opacity:0.2}} }}
+.ok {{ color:#4ade80; font-weight:700; font-size:1rem; }}
+</style>
+</head>
+<body>
+<h1>🚀 Deploying</h1>
+<div class="sub">git pull muvaffaqiyatli</div>
+
+<div class="spinner" id="spin"></div>
+
+<div class="git-box">{out}</div>
+
+<p class="status" id="st">Server qayta ishga tushmoqda<span class="dot">...</span></p>
+<p style="color:#333;font-size:0.78rem" id="elapsed">0s</p>
+
+<script>
+const KEY = '{k}';
+const H   = {{'ngrok-skip-browser-warning':'1','Accept':'application/json'}};
+let secs  = 0;
+
+const iv = setInterval(() => {{
+    secs += 3;
+    document.getElementById('elapsed').textContent = secs + 's o\'tdi';
+
+    fetch('/api/health', {{headers: H, cache: 'no-store'}})
+        .then(r => r.json())
+        .then(d => {{
+            if (d.status === 'ok') {{
+                clearInterval(iv);
+                document.getElementById('spin').style.borderTopColor = '#4ade80';
+                document.getElementById('spin').style.animation = 'none';
+                document.getElementById('st').innerHTML = '<span class="ok">✅ Server tayyor! Yo\'naltirilmoqda...</span>';
+                setTimeout(() => {{
+                    window.location.href = '/admin?key=' + KEY + '&msg=Deploy+muvaffaqiyatli!+✅&ok=1';
+                }}, 1200);
+            }}
+        }})
+        .catch(() => {{
+            document.getElementById('st').textContent =
+                'Server hali restart bo\\'layapti (' + secs + 's)...';
+        }});
+}}, 3000);
+</script>
+</body>
+</html>"""
+
 _ADMIN_CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -523,25 +597,29 @@ async def admin_action(a: str = "", key: str = ""):
 
     if a == "deploy":
         import subprocess, threading
-        def _do_deploy():
-            time.sleep(0.3)
-            try:
-                result = subprocess.run(
-                    ["git", "-c", "safe.directory=*", "pull", "--ff-only", "lookzi", "main"],
-                    cwd=str(ROOT), capture_output=True, text=True, timeout=60,
-                    env={**_os_mod.environ, "GIT_TERMINAL_PROMPT": "0"},
-                )
-                out = (result.stdout + result.stderr).strip()
-                logger.info("Deploy git pull: %s", out)
-                if result.returncode == 0:
-                    time.sleep(1)
-                    _os_mod._exit(0)
-                else:
-                    logger.error("Deploy git pull failed (%d): %s", result.returncode, out)
-            except Exception as exc:
-                logger.error("Deploy error: %s", exc)
-        threading.Thread(target=_do_deploy, daemon=True).start()
-        return redir("Deploy started: git pull running. Server will restart in ~40s.")
+        # Run git pull RIGHT NOW (synchronously) so we can show the result
+        try:
+            pull = subprocess.run(
+                ["git", "-c", "safe.directory=*", "pull", "--ff-only", "lookzi", "main"],
+                cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+                env={**_os_mod.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            git_out = (pull.stdout + pull.stderr).strip() or "(no output)"
+            logger.info("Deploy git pull (code %d): %s", pull.returncode, git_out)
+        except Exception as exc:
+            logger.error("Deploy git pull exception: %s", exc)
+            return redir(f"❌ git pull xato: {exc}", success=False)
+
+        if pull.returncode != 0:
+            # Pull failed — don't restart, just show error
+            return redir(f"❌ git pull muvaffaqiyatsiz:\n{git_out}", success=False)
+
+        # Pull succeeded — schedule restart and return waiting page
+        threading.Thread(target=lambda: (time.sleep(0.6), _os_mod._exit(0)), daemon=True).start()
+        return HTMLResponse(
+            _render_deploy_waiting(key, git_out),
+            headers={"Cache-Control": "no-store", "ngrok-skip-browser-warning": "1"},
+        )
 
     raise HTTPException(400, f"Unknown action: {a}")
 
