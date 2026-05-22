@@ -1496,31 +1496,63 @@ def build_ui() -> gr.Blocks:
 
                 def _run_tests_bg(state):
                     import subprocess, sys as _sys
+                    import requests as _req
+
+                    flt     = state.get("filter", "all")
                     new_sid = time.strftime("%Y%m%d_%H%M%S")
                     script  = ROOT / "scripts" / "run_tests.py"
-                    flt     = state.get("filter", "all")
-                    # Pre-create metadata.json so progress shows immediately
                     n_pairs = _count_pairs()
+
+                    # ── 1. Health check first ───────────────────────────────
+                    host = "http://127.0.0.1:7860"
+                    try:
+                        r    = _req.get(f"{host}/api/health", timeout=4)
+                        info = r.json()
+                    except Exception as e:
+                        msg = (f"<div style='color:#f55;padding:8px;background:#2a0a0a;"
+                               f"border-radius:8px'>❌ Server javob bermadi: {e}<br>"
+                               f"Server ishlamoqdami?</div>")
+                        return ({**state}, state.get("sid") and
+                                _progress_html(_load_meta(state["sid"]) or {}) or
+                                "<div></div>",
+                                None, None, None, "<div></div>", [], "",
+                                "<div></div>", msg)
+
+                    if not info.get("model_loaded"):
+                        msg = (f"<div style='color:#f5a623;padding:8px;background:#2a1a00;"
+                               f"border-radius:8px'>⚠️ Model uyquda!<br>"
+                               f"Admin paneldan <b>Wake</b> tugmasini bosing, "
+                               f"keyin qaytadan urinib ko'ring.</div>")
+                        return ({**state}, state.get("sid") and
+                                _progress_html(_load_meta(state["sid"]) or {}) or
+                                "<div></div>",
+                                None, None, None, "<div></div>", [], "",
+                                "<div></div>", msg)
+
+                    # ── 2. Pre-create metadata so progress shows instantly ──
                     session_dir = test_dir / new_sid
                     session_dir.mkdir(parents=True, exist_ok=True)
-                    init_meta = {
+                    _save_meta(new_sid, {
                         "session_id": new_sid,
                         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                         "status": "running",
                         "total": n_pairs, "ok": 0, "error": 0,
                         "tests": [],
-                    }
-                    _save_meta(new_sid, init_meta)
+                    })
+
+                    # ── 3. Launch subprocess, log to runner.log ─────────────
                     if not script.exists():
                         msg = "<div style='color:#f55'>scripts/run_tests.py topilmadi.</div>"
                     else:
+                        log_path = session_dir / "runner.log"
                         try:
-                            flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                            log_f = open(log_path, "w", encoding="utf-8")
                             subprocess.Popen(
                                 [_sys.executable, str(script),
                                  "--mode", "all", "--session", new_sid,
-                                 "--host", "http://127.0.0.1:7860"],
-                                cwd=str(ROOT), creationflags=flags,
+                                 "--host", host],
+                                cwd=str(ROOT),
+                                stdout=log_f, stderr=log_f,
                             )
                             msg = (
                                 f"<div style='background:#0a2a1a;border:1px solid #00c896;"
@@ -1528,28 +1560,32 @@ def build_ui() -> gr.Blocks:
                                 f"<div style='color:#00c896;font-weight:700;font-size:1rem'>"
                                 f"⏳ Testlar ishlamoqda...</div>"
                                 f"<div style='color:#aaa;margin-top:4px'>"
-                                f"Session: <code>{new_sid}</code> &nbsp;·&nbsp; "
-                                f"Jami: <b>{n_pairs}</b> test<br>"
-                                f"Progress har 3 soniyada avtomatik yangilanadi.</div></div>"
+                                f"Session: <code style='color:#7cf'>{new_sid}</code>"
+                                f" &nbsp;·&nbsp; Jami: <b>{n_pairs}</b> test<br>"
+                                f"Progress avtomatik yangilanadi. "
+                                f"Log: <code>test_results/{new_sid}/runner.log</code>"
+                                f"</div></div>"
                             )
                         except Exception as exc:
-                            msg = f"<div style='color:#f55'>Subprocess xatosi: {exc}</div>"
-                    new_state = {"sid": new_sid, "tests": [], "idx": 0, "filter": flt}
+                            msg = (f"<div style='color:#f55;padding:8px'>"
+                                   f"Subprocess xatosi: <code>{exc}</code></div>")
+
                     prog = (
                         f"<div style='font-family:system-ui;font-size:0.85rem;"
                         f"color:#ccc;margin:8px 0'>"
                         f"<div style='display:flex;gap:24px;margin-bottom:6px'>"
                         f"<span>📊 <b>{n_pairs}</b> test</span>"
-                        f"<span style=\"color:#f5a623\">⏳ ishlamoqda...</span>"
+                        f"<span style='color:#f5a623'>⏳ ishlamoqda...</span>"
                         f"</div>"
                         f"<div style='background:#222;border-radius:6px;height:8px'>"
                         f"<div style='background:linear-gradient(90deg,#f5a623,#ff6b00);"
                         f"height:100%;width:5%;animation:pulse 1.5s infinite'></div>"
                         f"</div></div>"
                     )
+                    new_state = {"sid": new_sid, "tests": [], "idx": 0, "filter": flt}
                     return (new_state, prog,
                             None, None, None, "<div></div>", [], "",
-                            "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
+                            "<div style='color:#666;padding:8px'>Testlar boshlanmoqda...</div>",
                             msg)
 
                 def _auto_rate(state):

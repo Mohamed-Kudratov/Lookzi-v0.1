@@ -193,15 +193,14 @@ def main():
 
     # ── Server tekshirish ──────────────────────────────────────────────────
     try:
-        r = requests.get(f"{args.host}/api/health", timeout=5)
+        r = requests.get(f"{args.host}/api/health", timeout=10)
         info = r.json()
         if not info.get("model_loaded"):
-            print("[!] Model yuklanmagan. Admin paneldan Wake tugmasini bosing.")
-            sys.exit(1)
-        print(f"Server OK — {info.get('device','?')} | model loaded ✓\n")
+            print("[!] Model yuklanmagan — testlar baribir boshlanadi (natijalar xato bo'lishi mumkin).")
+        else:
+            print(f"Server OK — {info.get('device','?')} | model loaded ✓\n")
     except Exception as e:
-        print(f"[!] Serverga ulanib bo'lmadi: {e}")
-        sys.exit(1)
+        print(f"[!] Health check xatosi: {e} — davom etilmoqda...")
 
     # ── Metadata saqlash (boshlang'ich) ────────────────────────────────────
     meta = {
