@@ -593,9 +593,10 @@ async def admin_action(a: str = "", key: str = ""):
 
     if a == "sleep":
         if not _pipeline:
-            return redir("Model already unloaded.")
-        unload_pipeline()
-        return redir("Server sleeping 💤 — VRAM freed.")
+            return redir("Model allaqachon yuklanmagan.")
+        import threading
+        threading.Thread(target=unload_pipeline, daemon=True).start()
+        return redir("Server uxlayapti 💤 — VRAM bo'shaydi (~3s).")
 
     if a == "wake":
         if _pipeline:
