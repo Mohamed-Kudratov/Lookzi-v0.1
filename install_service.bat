@@ -47,7 +47,7 @@ echo  [OK] Eski service tozalandi
 
 :: Service o'rnatish
 echo  ... Service o'rnatilmoqda...
-"%NSSM%" install %SERVICE% "%PYTHON%" "-u app.py --preload --share --domain %DOMAIN% --authtoken %TOKEN% --log-file %LOGFILE%"
+"%NSSM%" install %SERVICE% "%PYTHON%" "-u app.py --share --domain %DOMAIN% --authtoken %TOKEN% --log-file %LOGFILE%"
 if %errorLevel% neq 0 (
     echo  [ERR] Service o'rnatilmadi!
     pause & exit /b 1

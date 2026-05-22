@@ -131,7 +131,7 @@ DEFAULT_SEG_FREE  = True
 
 # ── Pipeline singleton ────────────────────────────────────────────────────
 _pipeline = None
-_sleeping  = False   # True = user manually put server to sleep
+_sleeping  = True    # Start in sleep mode — wake manually from admin panel
 
 def get_pipeline():
     global _pipeline
@@ -1089,7 +1089,7 @@ def main():
         logger.info("GPU: %s | VRAM: %.1f GB", prop.name, prop.total_memory / 1e9)
 
     if args.preload:
-        get_pipeline()
+        wake_pipeline()   # --preload flag explicitly requests model load
 
     demo = build_ui()
     app  = gr.mount_gradio_app(api, demo, path="/")
