@@ -1542,9 +1542,7 @@ def build_ui() -> gr.Blocks:
                     return pairs
 
                 def _run_tests_bg(state):
-                    import threading, requests as _req
-
-                    flt     = state.get("filter", "all")
+                    flt = state.get("filter", "all")
                     new_sid = time.strftime("%Y%m%d_%H%M%S")
                     host    = "http://127.0.0.1:7860"
 
@@ -1580,7 +1578,7 @@ def build_ui() -> gr.Blocks:
                         encoding="utf-8",
                     )
 
-                    # ── Background thread — subprocess yo'q ────────────────
+                    # ── Background thread — run_tryon() ni to'g'ridan chaqir ──
                     def _worker():
                         def wlog(s):
                             with open(log_path, "a", encoding="utf-8") as lf:
@@ -1588,29 +1586,23 @@ def build_ui() -> gr.Blocks:
 
                         ok_n = err_n = 0
                         for i, pair in enumerate(pairs):
-                            person_f  = ROOT / pair["person_path"]
-                            garment_f = ROOT / pair["garment_path"]
-                            res_name  = f"{pair['id']}.png"
-                            res_path  = session_dir / res_name
+                            res_name = f"{pair['id']}.png"
+                            res_path = session_dir / res_name
                             wlog(f"[{i+1}/{len(pairs)}] {pair['id']}")
                             try:
-                                with open(person_f, "rb") as pf, \
-                                     open(garment_f, "rb") as gf:
-                                    t0   = time.time()
-                                    resp = _req.post(
-                                        f"{host}/api/tryon",
-                                        files={
-                                            "person_image":  ("p.jpg", pf, "image/jpeg"),
-                                            "garment_image": ("g.jpg", gf, "image/jpeg"),
-                                        },
-                                        data={"category": pair["category"],
-                                              "garment_photo_type": "model",
-                                              "return_base64": "false"},
-                                        timeout=180,
-                                    )
-                                    elapsed = round(time.time() - t0, 1)
-                                if resp.status_code == 200:
-                                    res_path.write_bytes(resp.content)
+                                person_img  = _PilImage.open(
+                                    ROOT / pair["person_path"]).convert("RGB")
+                                garment_img = _PilImage.open(
+                                    ROOT / pair["garment_path"]).convert("RGB")
+                                t0 = time.time()
+                                result_img, msg_out = run_tryon(
+                                    person_img, garment_img,
+                                    pair["category"], "model",
+                                    DEFAULT_STEPS, DEFAULT_GUIDANCE, -1, DEFAULT_SEG_FREE,
+                                )
+                                elapsed = round(time.time() - t0, 1)
+                                if result_img is not None:
+                                    result_img.save(str(res_path))
                                     pair["status"]      = "ok"
                                     pair["elapsed_s"]   = elapsed
                                     pair["result_path"] = f"test_results/{new_sid}/{res_name}"
@@ -1618,16 +1610,15 @@ def build_ui() -> gr.Blocks:
                                     wlog(f"  ✅ {elapsed}s")
                                 else:
                                     pair["status"] = "error"
-                                    pair["error"]  = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                                    pair["error"]  = msg_out or "run_tryon None qaytardi"
                                     err_n += 1
-                                    wlog(f"  ❌ HTTP {resp.status_code}")
+                                    wlog(f"  ❌ {msg_out}")
                             except Exception as exc:
                                 pair["status"] = "error"
                                 pair["error"]  = str(exc)
                                 err_n += 1
                                 wlog(f"  ❌ {exc}")
 
-                            # metadata.json ni har testdan keyin yangilash
                             cur = _load_meta(new_sid) or meta
                             cur["tests"][i] = pair
                             cur["ok"]    = ok_n
@@ -1636,7 +1627,8 @@ def build_ui() -> gr.Blocks:
 
                         wlog(f"\n✅ {ok_n}  ❌ {err_n}  / {len(pairs)} — DONE")
 
-                    threading.Thread(target=_worker, daemon=True).start()
+                    import threading as _threading
+                    _threading.Thread(target=_worker, daemon=True).start()
 
                     prog = (
                         f"<div style='font-family:system-ui;font-size:0.85rem;"
