@@ -117,6 +117,18 @@ def _free_port(port: int):
         logger.warning("Could not free port %d: %s", port, e)
 
 
+def _kill_old_ngrok():
+    """Kill leftover ngrok processes from previous sessions (prevents ERR_NGROK_108)."""
+    import subprocess as _sp
+    try:
+        r = _sp.run(["taskkill", "/F", "/IM", "ngrok.exe", "/T"],
+                    capture_output=True, text=True, timeout=5)
+        if "SUCCESS" in r.stdout:
+            logger.info("Killed leftover ngrok.exe processes")
+    except Exception:
+        pass
+
+
 # ── Category map: UI label → pipeline value ───────────────────────────────
 CATEGORY_MAP = {
     "Upper":   "tops",
@@ -1081,7 +1093,8 @@ def main():
     if args.log_file:
         _setup_file_logging(args.log_file)
 
-    # Free port before starting (kills stale process from previous run)
+    # Kill leftover ngrok + free port before starting
+    _kill_old_ngrok()
     _free_port(args.port)
 
     if torch.cuda.is_available():
