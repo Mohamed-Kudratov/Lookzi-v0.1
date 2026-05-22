@@ -1419,8 +1419,13 @@ def build_ui() -> gr.Blocks:
                                 None, None, None, "<div></div>", [], "",
                                 "<div style='color:#666;padding:8px'>Hali test yo'q.</div>",
                                 "<div></div>")
-                    fi    = _filtered_idx_list(tests, flt)
-                    start = fi[0] if fi else 0
+                    fi = _filtered_idx_list(tests, flt)
+                    # Xuddi shu session reload bo'lsa — joriy pozitsiyani saqlash
+                    if state.get("sid") == sid:
+                        cur = state.get("idx", 0)
+                        start = cur if cur in fi else (fi[0] if fi else 0)
+                    else:
+                        start = fi[0] if fi else 0
                     new_state = {"sid": sid, "tests": tests, "idx": start, "filter": flt}
                     t = tests[start]
                     return (new_state,
