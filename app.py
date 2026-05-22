@@ -1235,6 +1235,14 @@ def build_ui() -> gr.Blocks:
                         "<div style='color:#666;padding:8px'>Load a session to see stats.</div>"
                     )
 
+                # ── Runner log (diagnostic) ───────────────────────────────────
+                with gr.Accordion("📋  Runner Log", open=False):
+                    t_log = gr.Code(
+                        value="", language=None, label="",
+                        lines=15, interactive=False,
+                    )
+                    t_log_refresh = gr.Button("🔄 Log yangilash", size="sm")
+
                 # ── Previous sessions (hidden by default) ─────────────────────
                 with gr.Accordion("🗂  Previous sessions", open=False):
                     _existing = _get_sessions()
@@ -1546,13 +1554,14 @@ def build_ui() -> gr.Blocks:
                     else:
                         log_path = session_dir / "runner.log"
                         try:
-                            log_f = open(log_path, "w", encoding="utf-8")
+                            log_f = open(log_path, "w", encoding="utf-8", buffering=1)
                             subprocess.Popen(
                                 [_sys.executable, str(script),
                                  "--mode", "all", "--session", new_sid,
                                  "--host", host],
                                 cwd=str(ROOT),
                                 stdout=log_f, stderr=log_f,
+                                stdin=subprocess.DEVNULL,
                             )
                             msg = (
                                 f"<div style='background:#0a2a1a;border:1px solid #00c896;"
@@ -1646,6 +1655,21 @@ def build_ui() -> gr.Blocks:
                 # ── Auto-refresh timer (every 3 s) ────────────────────────────
                 t_timer = gr.Timer(value=3, active=False)
 
+                def _read_log(state):
+                    sid = state.get("sid")
+                    if not sid:
+                        return "Hali session yo'q."
+                    log_path = test_dir / sid / "runner.log"
+                    if not log_path.exists():
+                        return (f"runner.log topilmadi: {log_path}\n\n"
+                                f"Bu subprocess umuman ishlamadi degani.\n"
+                                f"sys.executable = {sys.executable}")
+                    try:
+                        txt = log_path.read_text(encoding="utf-8", errors="replace")
+                        return (txt[-6000:] if len(txt) > 6000 else txt) or "(log bo'sh)"
+                    except Exception as e:
+                        return f"Log o'qishda xato: {e}"
+
                 # ── Wire outputs ─────────────────────────────────────────────
                 _sess_outs = [t_state, t_progress, t_person, t_garment, t_result,
                               t_info, t_issues, t_note, t_stats, t_msg]
@@ -1668,14 +1692,16 @@ def build_ui() -> gr.Blocks:
 
                 t_run.click(fn=_run_tests_bg,
                              inputs=[t_state], outputs=_sess_outs)
-                # Activate timer right after Run Tests fires
-                t_run.click(fn=lambda: gr.Timer(active=True),
-                             outputs=[t_timer])
+                t_run.click(fn=lambda: gr.Timer(active=True), outputs=[t_timer])
 
-                t_refresh.click(fn=_do_refresh,
-                                 inputs=[t_state], outputs=_sess_outs)
+                t_refresh.click(fn=_do_refresh, inputs=[t_state], outputs=_sess_outs)
+
                 t_timer.tick(fn=_timer_tick,
                               inputs=[t_state], outputs=_sess_outs + [t_timer])
+
+                t_log_refresh.click(fn=_read_log, inputs=[t_state], outputs=[t_log])
+                # Timer also refreshes log
+                t_timer.tick(fn=_read_log, inputs=[t_state], outputs=[t_log])
                 t_autorank.click(fn=_auto_rate,
                                   inputs=[t_state], outputs=[t_state, t_msg, t_stats])
 
