@@ -192,8 +192,10 @@ def run_tryon(
     segmentation_free:  bool  = DEFAULT_SEG_FREE,
 ) -> tuple[Image.Image | None, str]:
 
-    if _sleeping:
-        return None, "Server uxlayapti. Admin paneldan Wake tugmasini bosing."
+    if _sleeping or _pipeline is None:
+        # Auto-wake on first request (model loads in ~15s)
+        logger.info("Auto-wake: loading model on demand...")
+        wake_pipeline()
     if person_image is None:
         return None, "Please upload a person photo."
     if garment_image is None:
