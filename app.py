@@ -876,23 +876,170 @@ div.meta-text,
 /* ── Examples gallery ── */
 .examples-gallery .label-wrap { color: #555 !important; font-size: 0.8rem !important; }
 .examples-gallery table td { background: #111 !important; border-radius: 8px !important; }
+
+/* ── Tabs ── */
+#main-tabs > .tab-nav { border-bottom: 1px solid #1e1e1e !important; margin-bottom: 4px; }
+#main-tabs > .tab-nav button {
+    background: transparent !important;
+    color: #555 !important;
+    font-weight: 600 !important;
+    font-size: 0.9rem !important;
+    padding: 10px 24px !important;
+    border-radius: 0 !important;
+    border-bottom: 2px solid transparent !important;
+    transition: all 0.15s !important;
+}
+#main-tabs > .tab-nav button.selected {
+    color: #fff !important;
+    border-bottom-color: #5555ff !important;
+}
+
+/* ── Test tab ── */
+.test-rating-row button { border-radius: 10px !important; font-weight: 700 !important; height: 46px !important; }
 """
 
 
 # ── Gradio UI ─────────────────────────────────────────────────────────────
 def build_ui() -> gr.Blocks:
+    import json as _json
+    from PIL import Image as _PilImage
+
     persons_dir  = ROOT / "examples" / "data" / "persons"
     garments_dir = ROOT / "examples" / "data" / "garments"
+    test_dir     = ROOT / "test_results"
 
     person_imgs  = sorted(persons_dir.glob("*.[jJpPwW]*"))  if persons_dir.exists() else []
     upper_imgs   = sorted(garments_dir.glob("upper_*"))     if garments_dir.exists() else []
     lower_imgs   = sorted(garments_dir.glob("lower_*"))     if garments_dir.exists() else []
     overall_imgs = sorted(garments_dir.glob("overall_*"))   if garments_dir.exists() else []
 
-    with gr.Blocks(title="Lookzi — Virtual Try-On",
-                   analytics_enabled=False) as demo:
+    # ── Test-tab helpers ───────────────────────────────────────────────────
+    def _get_sessions():
+        if not test_dir.exists():
+            return []
+        return sorted(
+            [d.name for d in test_dir.iterdir() if (d / "metadata.json").exists()],
+            reverse=True,
+        )
 
-        # ── Header ────────────────────────────────────────────────────────
+    def _load_meta(sid: str):
+        path = test_dir / sid / "metadata.json"
+        if not path.exists():
+            return None
+        return _json.loads(path.read_text(encoding="utf-8"))
+
+    def _save_meta(sid: str, meta: dict):
+        path = test_dir / sid / "metadata.json"
+        path.write_text(_json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _test_img(sid: str, test: dict, key: str):
+        if key == "result":
+            rp = test.get("result_path")
+            if not rp:
+                return None
+            path = ROOT / rp
+        elif key == "person":
+            path = ROOT / test["person_path"]
+        else:
+            path = ROOT / test["garment_path"]
+        if not path.exists():
+            return None
+        try:
+            return _PilImage.open(path).convert("RGB")
+        except Exception:
+            return None
+
+    def _progress_html(meta: dict) -> str:
+        tests = meta.get("tests", [])
+        total = len(tests)
+        rated = sum(1 for t in tests if t.get("rating"))
+        ok    = sum(1 for t in tests if t.get("status") == "ok")
+        err   = sum(1 for t in tests if t.get("status") == "error")
+        pct   = int(rated / total * 100) if total else 0
+        return (
+            f'<div style="font-family:system-ui;font-size:0.85rem;color:#ccc;margin:8px 0">'
+            f'<div style="display:flex;gap:24px;margin-bottom:6px">'
+            f'<span>📊 <b>{total}</b> test</span>'
+            f'<span style="color:#00c896">✅ <b>{ok}</b> ok</span>'
+            f'<span style="color:#ff4444">❌ <b>{err}</b> error</span>'
+            f'<span>🏷️ <b>{rated}/{total}</b> rated ({pct}%)</span>'
+            f'</div>'
+            f'<div style="background:#222;border-radius:6px;height:8px;overflow:hidden">'
+            f'<div style="background:linear-gradient(90deg,#00c896,#5555ff);height:100%;width:{pct}%;transition:width .3s"></div>'
+            f'</div></div>'
+        )
+
+    def _test_info_html(test: dict, idx: int, total: int) -> str:
+        icons = {"good": "✅", "mid": "⚠️", "bad": "❌"}
+        rating_icon = icons.get(test.get("rating", ""), "—")
+        status_color = "#00c896" if test.get("status") == "ok" else "#ff4444"
+        elapsed = f"{test.get('elapsed_s')}s" if test.get("elapsed_s") else "—"
+        issues  = ", ".join(test.get("issues", [])) or "—"
+        err_txt = f'<div style="margin-top:4px;color:#f88;font-size:0.78rem">{test["error"]}</div>' \
+                  if test.get("error") else ""
+        iss_txt = f'<div style="margin-top:4px;color:#f5a623;font-size:0.78rem">Issues: {issues}</div>' \
+                  if issues != "—" else ""
+        return (
+            f'<div style="font-family:system-ui;font-size:0.82rem;color:#aaa;padding:8px 12px;'
+            f'background:#1a1a1a;border-radius:8px;border:1px solid #333">'
+            f'<div style="display:flex;gap:20px;flex-wrap:wrap">'
+            f'<span><b style="color:#fff">{idx + 1} / {total}</b></span>'
+            f'<span>ID: <code style="color:#7cf">{test["id"]}</code></span>'
+            f'<span>Gender: <b>{test["gender"]}</b></span>'
+            f'<span>Cat: <b>{test["category"]}</b></span>'
+            f'<span style="color:{status_color}">● {test["status"]}</span>'
+            f'<span>⏱ {elapsed}</span>'
+            f'<span>Rating: <b>{rating_icon}</b></span>'
+            f'</div>{err_txt}{iss_txt}</div>'
+        )
+
+    def _stats_html(meta: dict) -> str:
+        tests = meta.get("tests", [])
+        if not tests:
+            return "<p style='color:#666'>No tests yet.</p>"
+        cats: dict = {}
+        for t in tests:
+            c = t["category"]
+            r = t.get("rating", "")
+            if c not in cats:
+                cats[c] = {"good": 0, "mid": 0, "bad": 0, "unrated": 0, "total": 0}
+            cats[c]["total"] += 1
+            cats[c][r if r in ("good", "mid", "bad") else "unrated"] += 1
+        issue_counts: dict = {}
+        for t in tests:
+            for iss in t.get("issues", []):
+                issue_counts[iss] = issue_counts.get(iss, 0) + 1
+        rows = "".join(
+            f'<tr><td style="color:#fff;padding:4px 12px">{cat}</td>'
+            f'<td style="color:#00c896;text-align:center">{d["good"]}</td>'
+            f'<td style="color:#f5a623;text-align:center">{d["mid"]}</td>'
+            f'<td style="color:#ff4444;text-align:center">{d["bad"]}</td>'
+            f'<td style="color:#888;text-align:center">{d["unrated"]}</td>'
+            f'<td style="text-align:center">{d["total"]}</td></tr>'
+            for cat, d in sorted(cats.items())
+        )
+        iss_html = ""
+        if issue_counts:
+            chips = "".join(
+                f'<span style="background:#222;border:1px solid #444;border-radius:4px;'
+                f'padding:2px 8px;font-size:0.78rem">{k}: <b style="color:#f5a623">{v}</b></span>'
+                for k, v in sorted(issue_counts.items(), key=lambda x: -x[1])
+            )
+            iss_html = f'<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:6px">{chips}</div>'
+        return (
+            f'<div style="font-family:system-ui;font-size:0.83rem;color:#ccc">'
+            f'<table style="width:100%;border-collapse:collapse">'
+            f'<tr style="color:#666;font-size:0.75rem;text-transform:uppercase">'
+            f'<th style="text-align:left;padding:4px 12px">Category</th>'
+            f'<th style="color:#00c896">Good</th><th style="color:#f5a623">Mid</th>'
+            f'<th style="color:#ff4444">Bad</th><th>Unrated</th><th>Total</th></tr>'
+            f'{rows}</table>{iss_html}</div>'
+        )
+
+    # ── Build UI ───────────────────────────────────────────────────────────
+    with gr.Blocks(title="Lookzi — Virtual Try-On", analytics_enabled=False) as demo:
+
+        # ── Header (always visible) ────────────────────────────────────────
         gr.HTML("""
         <div class="lookzi-header">
             <div class="logo">Lookzi</div>
@@ -900,143 +1047,340 @@ def build_ui() -> gr.Blocks:
         </div>
         """)
 
-        # ── Main panels ───────────────────────────────────────────────────
-        with gr.Row(equal_height=True):
-            with gr.Column(elem_classes="upload-panel"):
-                gr.HTML('<div class="section-label">Person Photo</div>')
-                person_img = gr.Image(
-                    label="",
-                    type="pil",
-                    height=480,
-                    show_label=False,
+        with gr.Tabs(elem_id="main-tabs"):
+
+            # ════════════════════════ TAB 1 — Try On ═════════════════════════
+            with gr.Tab("🎯  Try On"):
+
+                # ── Main panels ──────────────────────────────────────────────
+                with gr.Row(equal_height=True):
+                    with gr.Column(elem_classes="upload-panel"):
+                        gr.HTML('<div class="section-label">Person Photo</div>')
+                        person_img = gr.Image(label="", type="pil", height=480,
+                                              show_label=False)
+                    with gr.Column(elem_classes="upload-panel"):
+                        gr.HTML('<div class="section-label">Garment</div>')
+                        garment_img = gr.Image(label="", type="pil", height=480,
+                                               show_label=False)
+                    with gr.Column(elem_classes="result-panel"):
+                        gr.HTML('<div class="section-label">Result</div>')
+                        result_img = gr.Image(label="", type="pil", height=480,
+                                              show_label=False, interactive=False)
+
+                # ── Category + photo type ────────────────────────────────────
+                with gr.Row(elem_classes="category-row"):
+                    with gr.Column(scale=3):
+                        category = gr.Radio(
+                            choices=["Upper", "Lower", "Overall"], value="Upper",
+                            label="Garment Type",
+                            info="Upper = shirts & jackets  ·  Lower = pants & skirts  ·  Overall = dresses & jumpsuits",
+                        )
+                    with gr.Column(scale=2):
+                        photo_type = gr.Radio(
+                            choices=["model", "flat-lay"], value="model",
+                            label="Garment Photo",
+                            info="model = worn by someone  ·  flat-lay = product shot",
+                        )
+
+                # ── Advanced controls ────────────────────────────────────────
+                with gr.Row():
+                    timesteps = gr.Slider(10, 50, value=DEFAULT_STEPS, step=1,
+                                          label="Steps", info="More = slower but sharper")
+                    guidance  = gr.Slider(0.5, 7.0, value=DEFAULT_GUIDANCE, step=0.1,
+                                          label="Guidance Scale")
+                    seed      = gr.Number(value=-1, precision=0, label="Seed  (-1 = random)")
+                    seg_free  = gr.Checkbox(value=DEFAULT_SEG_FREE,
+                                            label="Segmentation-Free",
+                                            info="Better for loose/baggy garments")
+
+                # ── Action buttons ───────────────────────────────────────────
+                with gr.Row():
+                    run_btn   = gr.Button("Try On", variant="primary",   scale=5,
+                                          size="lg", elem_classes="tryon-btn")
+                    clear_btn = gr.Button("Clear",  variant="secondary", scale=1,
+                                          size="lg", elem_classes="clear-btn")
+
+                status = gr.Textbox(
+                    label="", placeholder="Ready.", interactive=False,
+                    lines=1, max_lines=2, show_label=False, elem_classes="status-box",
                 )
 
-            with gr.Column(elem_classes="upload-panel"):
-                gr.HTML('<div class="section-label">Garment</div>')
-                garment_img = gr.Image(
-                    label="",
-                    type="pil",
-                    height=480,
-                    show_label=False,
+                # ── Example galleries ────────────────────────────────────────
+                gr.HTML('<div class="section-label" style="padding-top:28px">Models</div>')
+                if person_imgs:
+                    gr.Examples(examples=[[str(p)] for p in person_imgs],
+                                inputs=[person_img], label="", examples_per_page=10,
+                                elem_id="persons-gallery")
+
+                with gr.Row():
+                    with gr.Column():
+                        gr.HTML('<div class="section-label">Upper Garments</div>')
+                        if upper_imgs:
+                            gr.Examples(examples=[[str(g)] for g in upper_imgs],
+                                        inputs=[garment_img], label="", examples_per_page=10)
+                    with gr.Column():
+                        gr.HTML('<div class="section-label">Lower Garments</div>')
+                        if lower_imgs:
+                            gr.Examples(examples=[[str(g)] for g in lower_imgs],
+                                        inputs=[garment_img], label="", examples_per_page=10)
+                    with gr.Column():
+                        gr.HTML('<div class="section-label">Overall / One-Piece</div>')
+                        if overall_imgs:
+                            gr.Examples(examples=[[str(g)] for g in overall_imgs],
+                                        inputs=[garment_img], label="", examples_per_page=10)
+
+                # ── Footer ───────────────────────────────────────────────────
+                gr.HTML("""
+                <div style="text-align:center;padding:32px 0 16px;color:#333;font-size:0.78rem;
+                            letter-spacing:1px;text-transform:uppercase;">
+                    Lookzi &nbsp;·&nbsp; Powered by AI &nbsp;·&nbsp; All processing on-device
+                </div>
+                """)
+
+                # ── Logic ────────────────────────────────────────────────────
+                def infer(person, garment, cat, ptype, steps, cfg, rng, sfree):
+                    img, msg = run_tryon(person, garment, cat, ptype,
+                                         int(steps), float(cfg), int(rng), bool(sfree))
+                    return img, msg
+
+                run_btn.click(
+                    fn=infer,
+                    inputs=[person_img, garment_img, category, photo_type,
+                            timesteps, guidance, seed, seg_free],
+                    outputs=[result_img, status],
+                    api_name="tryon",
+                )
+                clear_btn.click(
+                    fn=lambda: (None, None, None, ""),
+                    outputs=[person_img, garment_img, result_img, status],
                 )
 
-            with gr.Column(elem_classes="result-panel"):
-                gr.HTML('<div class="section-label">Result</div>')
-                result_img = gr.Image(
-                    label="",
-                    type="pil",
-                    height=480,
-                    show_label=False,
-                    interactive=False,
-                )
+            # ════════════════════════ TAB 2 — Tests ══════════════════════════
+            with gr.Tab("🧪  Tests"):
 
-        # ── Category + photo type ─────────────────────────────────────────
-        with gr.Row(elem_classes="category-row"):
-            with gr.Column(scale=3):
-                category = gr.Radio(
-                    choices=["Upper", "Lower", "Overall"],
-                    value="Upper",
-                    label="Garment Type",
-                    info="Upper = shirts & jackets  ·  Lower = pants & skirts  ·  Overall = dresses & jumpsuits",
-                )
-            with gr.Column(scale=2):
-                photo_type = gr.Radio(
-                    choices=["model", "flat-lay"],
-                    value="model",
-                    label="Garment Photo",
-                    info="model = worn by someone  ·  flat-lay = product shot",
-                )
+                # State: {sid, tests, idx}
+                t_state = gr.State({"sid": None, "tests": [], "idx": 0})
 
-        # ── Advanced controls ─────────────────────────────────────────────
-        with gr.Row():
-            timesteps = gr.Slider(10, 50, value=DEFAULT_STEPS, step=1,
-                                  label="Steps",
-                                  info="More = slower but sharper")
-            guidance  = gr.Slider(0.5, 7.0, value=DEFAULT_GUIDANCE, step=0.1,
-                                  label="Guidance Scale")
-            seed      = gr.Number(value=-1, precision=0,
-                                  label="Seed  (-1 = random)")
-            seg_free  = gr.Checkbox(value=DEFAULT_SEG_FREE,
-                                    label="Segmentation-Free",
-                                    info="Better for loose/baggy garments")
-
-        # ── Action buttons ────────────────────────────────────────────────
-        with gr.Row():
-            run_btn   = gr.Button("Try On", variant="primary",   scale=5,
-                                  size="lg", elem_classes="tryon-btn")
-            clear_btn = gr.Button("Clear",  variant="secondary", scale=1,
-                                  size="lg", elem_classes="clear-btn")
-
-        status = gr.Textbox(
-            label="", placeholder="Ready.", interactive=False,
-            lines=1, max_lines=2, show_label=False, elem_classes="status-box",
-        )
-
-        # ── Example galleries ─────────────────────────────────────────────
-        gr.HTML('<div class="section-label" style="padding-top:28px">Models</div>')
-        if person_imgs:
-            gr.Examples(
-                examples=[[str(p)] for p in person_imgs],
-                inputs=[person_img],
-                label="",
-                examples_per_page=10,
-                elem_id="persons-gallery",
-            )
-
-        with gr.Row():
-            with gr.Column():
-                gr.HTML('<div class="section-label">Upper Garments</div>')
-                if upper_imgs:
-                    gr.Examples(
-                        examples=[[str(g)] for g in upper_imgs],
-                        inputs=[garment_img],
-                        label="",
-                        examples_per_page=10,
+                # ── Toolbar ──────────────────────────────────────────────────
+                with gr.Row():
+                    t_session = gr.Dropdown(
+                        label="Session", choices=_get_sessions(),
+                        interactive=True, scale=5,
                     )
-            with gr.Column():
-                gr.HTML('<div class="section-label">Lower Garments</div>')
-                if lower_imgs:
-                    gr.Examples(
-                        examples=[[str(g)] for g in lower_imgs],
-                        inputs=[garment_img],
-                        label="",
-                        examples_per_page=10,
+                    t_refresh = gr.Button("🔄 Refresh", scale=1, size="sm")
+                    t_run     = gr.Button("▶ Run Tests", variant="primary", scale=2, size="sm")
+
+                t_progress = gr.HTML(
+                    "<div style='color:#555;font-size:0.83rem;padding:6px 0'>"
+                    "← Select a session to start reviewing.</div>"
+                )
+
+                # ── 3-panel image display ────────────────────────────────────
+                with gr.Row(equal_height=True):
+                    with gr.Column():
+                        gr.HTML('<div class="section-label">Person</div>')
+                        t_person = gr.Image(label="", type="pil", height=400,
+                                            show_label=False, interactive=False)
+                    with gr.Column():
+                        gr.HTML('<div class="section-label">Garment</div>')
+                        t_garment = gr.Image(label="", type="pil", height=400,
+                                             show_label=False, interactive=False)
+                    with gr.Column():
+                        gr.HTML('<div class="section-label">Result</div>')
+                        t_result = gr.Image(label="", type="pil", height=400,
+                                            show_label=False, interactive=False)
+
+                # ── Info bar + navigation ────────────────────────────────────
+                t_info = gr.HTML("<div></div>")
+                with gr.Row():
+                    t_prev = gr.Button("◀  Prev", scale=1, size="sm")
+                    t_next = gr.Button("Next  ▶", scale=1, size="sm")
+
+                # ── Rating buttons ───────────────────────────────────────────
+                gr.HTML('<div class="section-label" style="padding-top:4px">Rate this result</div>')
+                with gr.Row(elem_classes="test-rating-row"):
+                    t_good = gr.Button("✅  Good",  variant="primary",   scale=1)
+                    t_mid  = gr.Button("⚠️  Mid",   variant="secondary", scale=1)
+                    t_bad  = gr.Button("❌  Bad",   variant="stop",      scale=1)
+
+                # ── Issues + note ────────────────────────────────────────────
+                t_issues = gr.CheckboxGroup(
+                    choices=["wrong_fit", "mask_error", "artifact", "color_shift",
+                             "body_distort", "bg_noise", "garment_messy", "blurry"],
+                    label="Issues", value=[],
+                )
+                t_note = gr.Textbox(
+                    label="Note", placeholder="Optional comment...",
+                    lines=2, max_lines=4,
+                )
+
+                with gr.Row():
+                    t_save      = gr.Button("💾  Save",           scale=2, size="sm")
+                    t_save_next = gr.Button("💾  Save & Next  ▶", variant="primary",
+                                            scale=3, size="sm")
+
+                t_msg = gr.HTML("<div style='height:24px'></div>")
+
+                # ── Stats accordion ──────────────────────────────────────────
+                with gr.Accordion("📊  Statistics", open=False):
+                    t_stats = gr.HTML(
+                        "<div style='color:#666;padding:8px'>Load a session to see stats.</div>"
                     )
-            with gr.Column():
-                gr.HTML('<div class="section-label">Overall / One-Piece</div>')
-                if overall_imgs:
-                    gr.Examples(
-                        examples=[[str(g)] for g in overall_imgs],
-                        inputs=[garment_img],
-                        label="",
-                        examples_per_page=10,
-                    )
 
-        # ── Footer ────────────────────────────────────────────────────────
-        gr.HTML("""
-        <div style="text-align:center;padding:32px 0 16px;color:#333;font-size:0.78rem;
-                    letter-spacing:1px;text-transform:uppercase;">
-            Lookzi &nbsp;·&nbsp; Powered by AI &nbsp;·&nbsp; All processing on-device
-        </div>
-        """)
+                # ──────────────────── Event handlers ─────────────────────────
 
-        # ── Logic ─────────────────────────────────────────────────────────
-        def infer(person, garment, cat, ptype, steps, cfg, rng, sfree):
-            img, msg = run_tryon(person, garment, cat, ptype,
-                                 int(steps), float(cfg), int(rng), bool(sfree))
-            return img, msg
+                def _refresh_sessions():
+                    return gr.Dropdown(choices=_get_sessions())
 
-        run_btn.click(
-            fn=infer,
-            inputs=[person_img, garment_img, category, photo_type,
-                    timesteps, guidance, seed, seg_free],
-            outputs=[result_img, status],
-            api_name="tryon",
-        )
-        clear_btn.click(
-            fn=lambda: (None, None, None, ""),
-            outputs=[person_img, garment_img, result_img, status],
-        )
+                def _on_session(sid, state):
+                    empty = (state, "<div style='color:#666'>No session selected.</div>",
+                             None, None, None, "<div></div>", [], "", "<div></div>", "<div></div>")
+                    if not sid:
+                        return empty
+                    meta = _load_meta(sid)
+                    if not meta:
+                        return (state,
+                                "<div style='color:#f55'>metadata.json not found.</div>",
+                                None, None, None, "<div></div>", [], "", "<div></div>", "<div></div>")
+                    tests = meta.get("tests", [])
+                    if not tests:
+                        return ({"sid": sid, "tests": [], "idx": 0},
+                                "<div style='color:#f55'>No tests in session.</div>",
+                                None, None, None, "<div></div>", [], "", "<div></div>", "<div></div>")
+                    new_state = {"sid": sid, "tests": tests, "idx": 0}
+                    t = tests[0]
+                    return (new_state,
+                            _progress_html(meta),
+                            _test_img(sid, t, "person"),
+                            _test_img(sid, t, "garment"),
+                            _test_img(sid, t, "result"),
+                            _test_info_html(t, 0, len(tests)),
+                            t.get("issues", []),
+                            t.get("note", ""),
+                            _stats_html(meta),
+                            "<div></div>")
+
+                def _navigate(state, direction: int):
+                    sid   = state.get("sid")
+                    tests = state.get("tests", [])
+                    idx   = state.get("idx", 0)
+                    if not tests or not sid:
+                        return state, None, None, None, "<div></div>", [], ""
+                    idx = (idx + direction) % len(tests)
+                    # re-read from disk to pick up any saved ratings
+                    meta = _load_meta(sid) or {}
+                    fresh = meta.get("tests", tests)
+                    new_state = {"sid": sid, "tests": fresh, "idx": idx}
+                    t = fresh[idx] if idx < len(fresh) else tests[idx]
+                    return (new_state,
+                            _test_img(sid, t, "person"),
+                            _test_img(sid, t, "garment"),
+                            _test_img(sid, t, "result"),
+                            _test_info_html(t, idx, len(fresh)),
+                            t.get("issues", []),
+                            t.get("note", ""))
+
+                def _do_save(state, rating_val, issues, note, advance: bool):
+                    sid   = state.get("sid")
+                    tests = state.get("tests", [])
+                    idx   = state.get("idx", 0)
+                    if not sid or not tests:
+                        return (state,
+                                "<div style='color:#f55'>No session loaded.</div>",
+                                None, None, None, "<div></div>", [], "", "<div></div>")
+                    meta = _load_meta(sid)
+                    if not meta:
+                        return (state,
+                                "<div style='color:#f55'>Metadata error.</div>",
+                                None, None, None, "<div></div>", [], "", "<div></div>")
+                    meta["tests"][idx]["rating"] = rating_val
+                    meta["tests"][idx]["issues"] = issues
+                    meta["tests"][idx]["note"]   = note
+                    _save_meta(sid, meta)
+                    fresh = meta["tests"]
+                    new_idx = (idx + 1) % len(fresh) if advance else idx
+                    new_state = {"sid": sid, "tests": fresh, "idx": new_idx}
+                    t = fresh[new_idx]
+                    icon = {"good": "✅", "mid": "⚠️", "bad": "❌"}.get(rating_val, "💾")
+                    return (new_state,
+                            f"<div style='color:#00c896;font-size:0.82rem'>{icon} Saved — {rating_val}</div>",
+                            _test_img(sid, t, "person"),
+                            _test_img(sid, t, "garment"),
+                            _test_img(sid, t, "result"),
+                            _test_info_html(t, new_idx, len(fresh)),
+                            t.get("issues", []),
+                            t.get("note", ""),
+                            _progress_html(meta))
+
+                def _save_keep(state, issues, note):
+                    tests = state.get("tests", [])
+                    idx   = state.get("idx", 0)
+                    cur_rating = (tests[idx].get("rating") or "mid") if tests else "mid"
+                    return _do_save(state, cur_rating, issues, note, advance=False)
+
+                def _save_next(state, issues, note):
+                    tests = state.get("tests", [])
+                    idx   = state.get("idx", 0)
+                    cur_rating = (tests[idx].get("rating") or "mid") if tests else "mid"
+                    return _do_save(state, cur_rating, issues, note, advance=True)
+
+                def _run_tests_bg(sid):
+                    import subprocess, sys as _sys
+                    if not sid:
+                        return "<div style='color:#f55'>Session tanlang.</div>"
+                    script = ROOT / "scripts" / "run_tests.py"
+                    if not script.exists():
+                        return "<div style='color:#f55'>scripts/run_tests.py topilmadi.</div>"
+                    try:
+                        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                        subprocess.Popen(
+                            [_sys.executable, str(script),
+                             "--mode", "all", "--session", sid,
+                             "--host", "http://127.0.0.1:7860"],
+                            cwd=str(ROOT),
+                            creationflags=flags,
+                        )
+                        return (f"<div style='color:#00c896'>▶ Test runner boshlandi — "
+                                f"session: <b>{sid}</b><br>"
+                                f"Tugagach 🔄 Refresh bosib sessiyani tanlang.</div>")
+                    except Exception as exc:
+                        return f"<div style='color:#f55'>Error: {exc}</div>"
+
+                # wire outputs lists
+                _sess_outs  = [t_state, t_progress, t_person, t_garment, t_result,
+                               t_info, t_issues, t_note, t_stats, t_msg]
+                _nav_outs   = [t_state, t_person, t_garment, t_result,
+                               t_info, t_issues, t_note]
+                _save_outs  = [t_state, t_msg, t_person, t_garment, t_result,
+                               t_info, t_issues, t_note, t_progress]
+
+                t_refresh.click(fn=_refresh_sessions, outputs=[t_session])
+                t_session.change(fn=_on_session,
+                                  inputs=[t_session, t_state], outputs=_sess_outs)
+
+                t_prev.click(fn=lambda s: _navigate(s, -1),
+                              inputs=[t_state], outputs=_nav_outs)
+                t_next.click(fn=lambda s: _navigate(s,  1),
+                              inputs=[t_state], outputs=_nav_outs)
+
+                t_good.click(
+                    fn=lambda s, iss, n: _do_save(s, "good", iss, n, advance=True),
+                    inputs=[t_state, t_issues, t_note], outputs=_save_outs,
+                )
+                t_mid.click(
+                    fn=lambda s, iss, n: _do_save(s, "mid", iss, n, advance=True),
+                    inputs=[t_state, t_issues, t_note], outputs=_save_outs,
+                )
+                t_bad.click(
+                    fn=lambda s, iss, n: _do_save(s, "bad", iss, n, advance=True),
+                    inputs=[t_state, t_issues, t_note], outputs=_save_outs,
+                )
+                t_save.click(fn=_save_keep,
+                              inputs=[t_state, t_issues, t_note], outputs=_save_outs)
+                t_save_next.click(fn=_save_next,
+                                   inputs=[t_state, t_issues, t_note], outputs=_save_outs)
+
+                t_run.click(fn=_run_tests_bg, inputs=[t_session], outputs=[t_msg])
 
     demo.css = CSS
     return demo
