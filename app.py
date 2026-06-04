@@ -681,6 +681,28 @@ async def admin_action(a: str = "", key: str = ""):
         threading.Thread(target=wake_pipeline, daemon=True).start()
         return redir("Model loading… (~15s) ⚡")
 
+    def _run_pip_install() -> str:
+        """requirements_quality.txt dan yangi paketlarni o'rnatadi."""
+        req_file = ROOT / "requirements_quality.txt"
+        if not req_file.exists():
+            return "requirements_quality.txt topilmadi"
+        try:
+            r = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", str(req_file),
+                 "--quiet", "--no-warn-script-location"],
+                cwd=str(ROOT), capture_output=True, text=True, timeout=120,
+            )
+            out = (r.stdout + r.stderr).strip()
+            if r.returncode == 0:
+                logger.info("pip install OK: %s", out[:200])
+                return "pip install OK"
+            else:
+                logger.warning("pip install xato (code %d): %s", r.returncode, out[:200])
+                return f"pip install warning: {out[:100]}"
+        except Exception as e:
+            logger.warning("pip install exception: %s", e)
+            return f"pip install skip: {e}"
+
     if a == "deploy":
         import subprocess, threading
         # Run git pull RIGHT NOW (synchronously) so we can show the result
@@ -697,17 +719,18 @@ async def admin_action(a: str = "", key: str = ""):
             return redir(f"❌ git pull xato: {exc}", success=False)
 
         if pull.returncode != 0:
-            # Pull failed — don't restart, just show error
             return redir(f"❌ git pull muvaffaqiyatsiz: {git_out}", success=False)
 
-        # Already up to date — no restart needed
+        # Already up to date — faqat pip install qilamiz (yangi deps bo'lishi mumkin)
+        pip_out = _run_pip_install()
         if "Already up to date" in git_out:
-            return redir("✅ Kod allaqachon yangi (Already up to date). Restart kerak emas.", success=True)
+            return redir(f"✅ Kod yangi. {pip_out}", success=True)
 
-        # New code pulled — schedule restart and show waiting page
+        # New code pulled — pip install + restart
+        pip_out = _run_pip_install()
         threading.Thread(target=lambda: (time.sleep(0.6), _os_mod._exit(0)), daemon=True).start()
         return HTMLResponse(
-            _render_deploy_waiting(key, git_out),
+            _render_deploy_waiting(key, f"{git_out}\n\n{pip_out}"),
             headers={"Cache-Control": "no-store", "ngrok-skip-browser-warning": "1"},
         )
 
