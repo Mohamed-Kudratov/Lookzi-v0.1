@@ -49,6 +49,21 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, PlainTextResponse
 import uvicorn
 
+# ── Lookzi Quality Pipeline ───────────────────────────────────────────────
+try:
+    from lookzi_pipeline import (
+        preprocess_garment,
+        validate_person, validate_garment,
+        run_best, score_result, auto_rate,
+        get_preset, PRESETS,
+    )
+    _PIPELINE_OK = True
+    logger_tmp = logging.getLogger("lookzi")
+    logger_tmp.info("Lookzi pipeline: OK")
+except Exception as _pe:
+    _PIPELINE_OK = False
+    logging.getLogger("lookzi").warning("lookzi_pipeline import xato: %s", _pe)
+
 ROOT    = Path(__file__).parent
 WEIGHTS = ROOT / "weights"
 OUTPUTS = ROOT / "outputs"
@@ -1153,6 +1168,18 @@ def build_ui() -> gr.Blocks:
                                             label="Segmentation-Free",
                                             info="Better for loose/baggy garments")
 
+                # ── Smart Mode controls ──────────────────────────────────────
+                with gr.Row():
+                    smart_mode = gr.Checkbox(
+                        value=True, label="🧠 Smart Mode",
+                        info="Preprocessing + 3x generate → eng yaxshi natija avtomatik tanlanadi",
+                    )
+                    n_samples = gr.Slider(
+                        1, 5, value=3, step=1, label="Variantlar soni",
+                        info="Ko'p = yaxshiroq natija, lekin sekinroq",
+                        visible=True,
+                    )
+
                 # ── Action buttons ───────────────────────────────────────────
                 with gr.Row():
                     run_btn   = gr.Button("Try On", variant="primary",   scale=5,
@@ -1164,6 +1191,7 @@ def build_ui() -> gr.Blocks:
                     label="", placeholder="Ready.", interactive=False,
                     lines=1, max_lines=2, show_label=False, elem_classes="status-box",
                 )
+                quality_html = gr.HTML("")
 
                 # ── Example galleries ────────────────────────────────────────
                 gr.HTML('<div class="section-label" style="padding-top:28px">Models</div>')
@@ -1197,22 +1225,69 @@ def build_ui() -> gr.Blocks:
                 </div>
                 """)
 
+                # ── Smart mode visibility ─────────────────────────────────────
+                smart_mode.change(
+                    fn=lambda v: gr.Slider(visible=v),
+                    inputs=[smart_mode], outputs=[n_samples],
+                )
+
                 # ── Logic ────────────────────────────────────────────────────
-                def infer(person, garment, cat, ptype, steps, cfg, rng, sfree):
+                def infer(person, garment, cat, ptype, steps, cfg, rng, sfree,
+                          use_smart, n_var):
+                    if person is None:
+                        return None, "⚠️ Odam rasmini yuklang", ""
+                    if garment is None:
+                        return None, "⚠️ Kiyim rasmini yuklang", ""
+
+                    # Input validation
+                    if _PIPELINE_OK:
+                        pv = validate_person(person)
+                        if not pv.ok:
+                            return None, pv.message, ""
+                        gv = validate_garment(garment)
+                        if not gv.ok:
+                            return None, gv.message, ""
+
+                    # Smart mode: preprocessing + multi-generate
+                    if use_smart and _PIPELINE_OK:
+                        img, msg, q_score = run_best(
+                            run_tryon, person, garment, cat, ptype,
+                            n_samples=int(n_var),
+                            steps=int(steps), guidance=float(cfg),
+                            seg_free=bool(sfree),
+                        )
+                        if img is None:
+                            return None, msg, ""
+                        rating  = auto_rate(q_score)
+                        r_color = {"good": "#00c896", "mid": "#f5a623", "bad": "#ff4444"}.get(rating, "#aaa")
+                        r_emoji = {"good": "✅", "mid": "⚠️", "bad": "❌"}.get(rating, "")
+                        q_html  = (
+                            f'<div style="font-size:0.82rem;padding:6px 12px;'
+                            f'background:#1a1a1a;border-radius:8px;border:1px solid #333;'
+                            f'display:inline-block;margin-top:4px">'
+                            f'{r_emoji} Sifat: <b style="color:{r_color}">'
+                            f'{q_score:.0f}/100 ({rating})</b>'
+                            f' &nbsp;·&nbsp; {int(n_var)} variant tekshirildi'
+                            f'</div>'
+                        )
+                        return img, msg, q_html
+
+                    # Oddiy rejim
                     img, msg = run_tryon(person, garment, cat, ptype,
                                          int(steps), float(cfg), int(rng), bool(sfree))
-                    return img, msg
+                    return img, msg, ""
 
                 run_btn.click(
                     fn=infer,
                     inputs=[person_img, garment_img, category, photo_type,
-                            timesteps, guidance, seed, seg_free],
-                    outputs=[result_img, status],
+                            timesteps, guidance, seed, seg_free,
+                            smart_mode, n_samples],
+                    outputs=[result_img, status, quality_html],
                     api_name="tryon",
                 )
                 clear_btn.click(
-                    fn=lambda: (None, None, None, ""),
-                    outputs=[person_img, garment_img, result_img, status],
+                    fn=lambda: (None, None, None, "", ""),
+                    outputs=[person_img, garment_img, result_img, status, quality_html],
                 )
 
             # ════════════════════════ TAB 2 — Tests ══════════════════════════
@@ -1381,6 +1456,12 @@ def build_ui() -> gr.Blocks:
                     filter_badge = (f' &nbsp;<span style="background:#333;border-radius:4px;'
                                     f'padding:1px 6px;font-size:0.72rem">{flt}</span>'
                                     if flt != "all" else "")
+                    # Sifat skori (smart mode dan)
+                    score_val = test.get("score")
+                    score_txt = ""
+                    if score_val is not None:
+                        s_color = "#00c896" if score_val >= 72 else "#f5a623" if score_val >= 45 else "#ff4444"
+                        score_txt = f'<span>🎯 <b style="color:{s_color}">{score_val:.0f}/100</b></span>'
                     return (
                         f'<div style="font-family:system-ui;font-size:0.82rem;color:#aaa;'
                         f'padding:8px 12px;background:#1a1a1a;border-radius:8px;border:1px solid #333">'
@@ -1392,6 +1473,7 @@ def build_ui() -> gr.Blocks:
                         f'<span style="color:{status_color}">● {test["status"]}</span>'
                         f'<span>⏱ {elapsed}</span>'
                         f'<span>Rating: <b>{rating_icon}</b></span>'
+                        f'{score_txt}'
                         f'</div>{err_txt}{iss_txt}</div>'
                     )
 
@@ -1663,6 +1745,9 @@ def build_ui() -> gr.Blocks:
                             with open(log_path, "a", encoding="utf-8") as lf:
                                 lf.write(s + "\n")
 
+                        _use_pipeline = _PIPELINE_OK
+                        wlog(f"Smart pipeline: {'ON' if _use_pipeline else 'OFF (lookzi_pipeline yuklanmadi)'}")
+
                         ok_n = err_n = 0
                         for i, pair in enumerate(pairs):
                             res_name = f"{pair['id']}.png"
@@ -1671,22 +1756,42 @@ def build_ui() -> gr.Blocks:
                             try:
                                 person_img  = _PilImage.open(
                                     ROOT / pair["person_path"]).convert("RGB")
-                                garment_img = _PilImage.open(
+                                garment_raw = _PilImage.open(
                                     ROOT / pair["garment_path"]).convert("RGB")
+
                                 t0 = time.time()
-                                result_img, msg_out = run_tryon(
-                                    person_img, garment_img,
-                                    pair["category"], "model",
-                                    DEFAULT_STEPS, DEFAULT_GUIDANCE, -1, DEFAULT_SEG_FREE,
-                                )
+
+                                if _use_pipeline:
+                                    # Smart mode: preprocessing + 3x generate + best pick
+                                    result_img, msg_out, q_score = run_best(
+                                        run_tryon,
+                                        person_img, garment_raw,
+                                        pair["category"], "model",
+                                        n_samples=3,
+                                    )
+                                    if result_img is not None:
+                                        pair["score"]  = round(q_score, 1)
+                                        pair["rating"] = auto_rate(q_score)
+                                else:
+                                    # Oddiy rejim
+                                    result_img, msg_out = run_tryon(
+                                        person_img, garment_raw,
+                                        pair["category"], "model",
+                                        DEFAULT_STEPS, DEFAULT_GUIDANCE,
+                                        -1, DEFAULT_SEG_FREE,
+                                    )
+                                    msg_out = msg_out or ""
+
                                 elapsed = round(time.time() - t0, 1)
+
                                 if result_img is not None:
                                     result_img.save(str(res_path))
                                     pair["status"]      = "ok"
                                     pair["elapsed_s"]   = elapsed
                                     pair["result_path"] = f"test_results/{new_sid}/{res_name}"
                                     ok_n += 1
-                                    wlog(f"  ✅ {elapsed}s")
+                                    score_str = f" score={pair.get('score', '?')}" if _use_pipeline else ""
+                                    wlog(f"  ✅ {elapsed}s{score_str}")
                                 else:
                                     pair["status"] = "error"
                                     pair["error"]  = msg_out or "run_tryon None qaytardi"
