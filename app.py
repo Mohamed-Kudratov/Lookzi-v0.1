@@ -53,7 +53,6 @@ import uvicorn
 try:
     from lookzi_pipeline import (
         preprocess_garment,
-        validate_person, validate_garment,
         run_best, score_result, auto_rate,
         get_preset, PRESETS,
     )
@@ -1258,18 +1257,9 @@ def build_ui() -> gr.Blocks:
                 def infer(person, garment, cat, ptype, steps, cfg, rng, sfree,
                           use_smart, n_var):
                     if person is None:
-                        return None, "⚠️ Odam rasmini yuklang", ""
+                        return None, "Odam rasmini yuklang", ""
                     if garment is None:
-                        return None, "⚠️ Kiyim rasmini yuklang", ""
-
-                    # Input validation
-                    if _PIPELINE_OK:
-                        pv = validate_person(person)
-                        if not pv.ok:
-                            return None, pv.message, ""
-                        gv = validate_garment(garment)
-                        if not gv.ok:
-                            return None, gv.message, ""
+                        return None, "Kiyim rasmini yuklang", ""
 
                     # Smart mode: preprocessing + multi-generate
                     if use_smart and _PIPELINE_OK:
